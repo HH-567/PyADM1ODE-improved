@@ -1,0 +1,81 @@
+{
+  "id": "BGA2_sketch_full",
+  "input": {
+    "modality": "hybrid",
+    "language": "de",
+    "image_path": "BGA2_sketch.png",
+    "content": "Fermenter F1 und Nachgärer N1 werden mesophil bei 40 °C betrieben mit einem maximalen Füllgrad von 90 %. Der Gasraum (Kuppeldach plus nicht befüllter Kopfraum) beträgt je 549 m³. Das Gärrestlager G1 ist unbeheizt (ca. 20 °C), maximaler Füllgrad 90 %, Gasraum (inkl. Kopfraum) 924 m³. Digestatstrom: F1 → N1 → G1. Das Biogas aller Behälter wird dem BHKW zugeführt. Das BHKW hat einen elektrischen Wirkungsgrad von 40 % und einen thermischen Wirkungsgrad von 45 %.\n\nSubstratzufuhr: Maissilage über den Feststoffdosierer in F1 und Rindergülle aus der Vorgrube in F1."
+  },
+  "regime": "fully_specified",
+  "reference": {
+    "components": [
+      {
+        "id": "F1",
+        "type": "Digester",
+        "label": "Fermenter 1",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 2244,
+            "obligation": "derivable",
+            "formula": "pi/4*23^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 2221, "max": 2267}
+          },
+          "V_gas": {"value": 549, "obligation": "given", "accept": {"min": 548, "max": 550}},
+          "T_ad": {"value": 313.15, "obligation": "given", "accept": {"min": 312.83, "max": 313.47}}
+        }
+      },
+      {"id": "N1", "type": "Digester", "label": "Nachgärer", "obligation": "given", "params": {"_same_as": "F1"}},
+      {
+        "id": "G1",
+        "type": "Digester",
+        "label": "Gärrestlager",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 3817,
+            "obligation": "derivable",
+            "formula": "pi/4*30^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 3778, "max": 3856}
+          },
+          "V_gas": {"value": 924, "obligation": "given", "accept": {"min": 923, "max": 925}},
+          "T_ad": {"value": 293.15, "obligation": "given", "accept": {"min": 292.85, "max": 293.45}}
+        }
+      },
+      {"id": "F1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "N1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "G1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {
+        "id": "bhkw",
+        "type": "CHP",
+        "label": "BHKW 250 kW",
+        "obligation": "given",
+        "params": {
+          "P_el_nom": {"value": 250.0, "obligation": "given", "accept": {"min": 249, "max": 251}},
+          "eta_el": {"value": 0.4, "obligation": "given", "accept": {"min": 0.3996, "max": 0.4004}},
+          "eta_th": {"value": 0.45, "obligation": "given", "accept": {"min": 0.4495, "max": 0.4505}}
+        }
+      },
+      {
+        "id": "bhkw_flare",
+        "type": "Flare",
+        "label": "Notfackel",
+        "obligation": "auto",
+        "auto_created": true,
+        "note": "von add_chp erzeugt; entspricht 'Fackel' in der Skizze"
+      }
+    ],
+    "connections": [
+      {"from": "F1", "to": "N1", "type": "liquid", "obligation": "given"},
+      {"from": "N1", "to": "G1", "type": "liquid", "obligation": "given"},
+      {"from": "F1", "to": "F1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "N1", "to": "N1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "G1", "to": "G1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F1_storage", "to": "bhkw", "type": "gas", "obligation": "given"},
+      {"from": "N1_storage", "to": "bhkw", "type": "gas", "obligation": "given"},
+      {"from": "G1_storage", "to": "bhkw", "type": "gas", "obligation": "given"},
+      {"from": "bhkw", "to": "bhkw_flare", "type": "gas", "obligation": "auto"}
+    ]
+  },
+  "metadata": {"difficulty": "easy", "split": "test"}
+}

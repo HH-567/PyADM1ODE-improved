@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# PyADM1ODE-improved — top-level ignore rules
+# The three packages keep their own upstream .gitignore files; this one covers
+# the repo root and anything the launcher/build scripts create.
+# ---------------------------------------------------------------------------
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# --- virtual environments ---------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.julia/
+
+# --- build / packaging ------------------------------------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+.installed.cfg
+MANIFEST
+
+# --- caches and tool state --------------------------------------------------
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+.cache/
+
+# --- generated runtime output ----------------------------------------------
+PyADM1ODE/output/
+output/
+*.log
+*.tmp
+_out.txt
+pip-log.txt
+
+# --- build products of tools/ ----------------------------------------------
+# Rebuild with:  python tools/build_bundle.py   /   python tools/build_portable.py
+PyADM1ODE-demo/
+PyADM1ODE-portable/
+*.zip
+
+# --- editor / OS ------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

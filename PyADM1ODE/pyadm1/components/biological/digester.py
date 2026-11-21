@@ -1,0 +1,801 @@
+# pyadm1/components/biological/digester.py
+"""
+ADM1da digester component.
+
+Wraps :class:`pyadm1.core.adm1.ADM1` (41-state ADM1da model) in the component
+framework.  The ODE is integrated directly via
+:func:`scipy.integrate.solve_ivp` per simulation step; pH, VFA and TAC are
+computed natively from the state vector (no DLL dependency).
+
+Example
+-------
+    >>> from pyadm1 import Feedstock
+    >>> from pyadm1.components.biological import Digester
+    >>> fs = Feedstock(["maize_silage_milk_ripeness", "swine_manure"], feeding_freq=24)
+    >>> dig = Digester("dig1", fs, V_liq=1200, V_gas=216, T_ad=315.15)
+    >>> dig.initialize({"Q_substrates": [11.4, 6.1, 0, 0, 0, 0, 0, 0, 0, 0]})
+"""
+
+from __future__ import annotations
+
+import os
+import warnings
+from typing import Any
+
+import numpy as np
+from scipy.integrate import solve_ivp
+
+from ...core.adm1 import (
+    _IDX_P_CH4,
+    _IDX_P_CO2,
+    _IDX_P_H2,
+    _IDX_P_TOTAL,
+    _IDX_S_AC,
+    _IDX_S_AC_ION,
+    _IDX_S_ANION,
+    _IDX_S_BU,
+    _IDX_S_BU_ION,
+    _IDX_S_CATION,
+    _IDX_S_CO2,
+    _IDX_S_HCO3,
+    _IDX_S_NH3,
+    _IDX_S_NH4,
+    _IDX_S_PRO,
+    _IDX_S_PRO_ION,
+    _IDX_S_VA,
+    _IDX_S_VA_ION,
+    ADM1,
+    calc_total_solids,
+)
+from ...core.adm1 import (
+    STATE_SIZE as _ADM1_STATE_SIZE,
+)
+from ...core.adm_params import ADMParams
+from ...core.solver import get_solver_backend
+from ..base import Component, ComponentType
+from ..energy import GasStorage
+
+# The 37 liquid-state columns the influent vector carries (Q lives separately on
+# ``ADM1._Q`` because ``_state_input`` indexes 0..36 are the dissolved /
+# particulate concentrations the ODE reads).
+_N_LIQUID_STATE = 37
+
+#: Ammonium of the ADM1da / SIMBA# reference inoculum [kmol N/m3]. Used to seed
+#: tanks that have no substrate feed of their own, so their charge balance is
+#: carried by ammonium as in real digestate instead of by strong ions.
+_ADM1DA_INOCULUM_S_NH4 = 0.13223400394857032
+
+
+class Digester(Component):
+    """
+    ADM1da digester component (41-state).
+
+    Encapsulates a digester's geometry, attached gas storage, and the
+    underlying :class:`pyadm1.core.adm1.ADM1` instance.  The same component
+    class is used for hydrolysis pre-tanks, main fermenters and post-digesters
+    — the operating temperature and HRT determine the dominant biochemistry.
+
+    Parameters
+    ----------
+    component_id : str
+        Unique identifier for this component.
+    feedstock : Feedstock or None
+        Feedstock used to derive the influent.  May be ``None`` if you intend
+        to drive the digester exclusively via ``set_influent_dataframe`` on
+        the underlying :class:`ADM1` instance.
+    V_liq, V_gas, T_ad : float
+        Reactor liquid volume [m³], gas headspace [m³], temperature [K]. When
+        ``dynamic_volume=True``, ``V_liq`` is interpreted as the geometric
+        maximum (the overflow-weir setpoint) and the actual sludge volume
+        evolves with the mass balance.
+    name : str, optional
+    dynamic_volume : bool, default False
+        Enable a dynamic sludge-volume balance
+        ``dV/dt = Q_in − Q_out − q_S,loss``, with ``Q_out`` from an overflow
+        weir at ``V_liq``. When False, sludge volume stays constant and
+        ``Q_out = Q_in − q_S,loss`` enforces volume conservation.
+    initial_fill_fraction : float, default 1.0
+        Starting sludge fill as a fraction of the geometric maximum. Only
+        used when ``dynamic_volume=True``. Set below 1.0 to simulate a
+        partially-filled startup transient.
+    outflow_time_constant : float, default 1.0
+        Overflow-weir time constant ``τ_out`` [d]: ``Q_out = max(0, (V −
+        V_max) / τ_out)``. Only used when ``dynamic_volume=True``. Steady-
+        state sludge volume sits slightly above ``V_max`` at
+        ``V_max + (Q_in − q_S,loss)·τ_out``.
+    backend : str, optional
+            ADM1 right-hand-side backend, ``"numpy"`` (default) or ``"torch"``
+            (differentiable, same values). ``None`` uses the process-wide
+            default (see :func:`pyadm1.set_default_adm1_backend`).
+    """
+
+    #: Set once the TAC guard has fired, so a long simulation warns a single
+    #: time instead of on every step.
+    _tac_warned: bool = False
+
+    def __init__(
+        self,
+        component_id: str,
+        feedstock,
+        V_liq: float = 1977.0,
+        V_gas: float = 304.0,
+        T_ad: float = 315.15,
+        name: str | None = None,
+        dynamic_volume: bool = False,
+        initial_fill_fraction: float = 1.0,
+        outflow_time_constant: float = 1.0,
+        backend: str | None = None,
+    ):
+        super().__init__(component_id, ComponentType.DIGESTER, name)
+
+        self.V_liq = V_liq
+        self.V_gas = V_gas
+
+        # Built first: ``feedstock`` and ``T_ad`` are properties that read
+        # through to the ADM1 instance, so it has to exist before they are set.
+        self.adm1 = ADM1(feedstock=feedstock, V_liq=V_liq, V_gas=V_gas, T_ad=T_ad, backend=backend)
+
+        # Dynamic sludge volume with overflow-weir effluent.
+        self._dynamic_volume = bool(dynamic_volume)
+        self._V_liq_max = float(V_liq)
+        self._initial_fill_fraction = float(initial_fill_fraction)
+        self._tau_out = float(outflow_time_constant)
+
+        self.gas_storage: GasStorage = GasStorage(
+            component_id=f"{self.component_id}_storage",
+            storage_type="membrane",
+            capacity_m3=max(50.0, float(self.V_gas)),
+            p_min_bar=0.95,
+            p_max_bar=1.05,
+            initial_fill_fraction=0.1,
+            name=f"{self.name} Gas Storage",
+        )
+
+        self.adm1_state: list[float] = []
+        self.Q_substrates: list[float] = [0.0] * 10
+
+    # ------------------------------------------------------------------
+    # Operating point: temperature and feedstock
+    # ------------------------------------------------------------------
+
+    @property
+    def T_ad(self) -> float:
+        """Operating temperature [K]. Writable -- see :meth:`set_temperature`."""
+        return self.adm1.T_ad
+
+    @T_ad.setter
+    def T_ad(self, value: float) -> None:
+        self.adm1.T_ad = value
+
+    @property
+    def feedstock(self):
+        """Attached :class:`Feedstock`, or ``None``. Set via :meth:`set_feedstock`."""
+        return self.adm1.feedstock
+
+    @feedstock.setter
+    def feedstock(self, value) -> None:
+        self.adm1.feedstock = value
+
+    def set_temperature(self, T_ad: float, rebuild_state: bool = False) -> None:
+        """
+        Change the operating temperature.
+
+        All temperature-dependent ADM1 constants (kinetics, inhibition, Henry
+        coefficients, gas pressures) are recomputed, and any calibration
+        overrides are re-applied on top.
+
+        Parameters
+        ----------
+        T_ad : float
+            New operating temperature [K].
+        rebuild_state : bool, default False
+            When False the current biological state is kept and the reactor
+            simply runs on at the new temperature -- the biology follows as a
+            transient, which is what happens in a real plant. Set True to
+            re-derive the pre-inoculated steady state at the new temperature
+            instead; this discards the current state and needs a feedstock.
+        """
+        self.adm1.T_ad = T_ad
+        if rebuild_state:
+            if self.feedstock is None:
+                raise RuntimeError(
+                    f"Digester '{self.component_id}': rebuild_state=True needs a feedstock; "
+                    "call set_feedstock() first or use rebuild_state=False."
+                )
+            self.adm1_state = self._build_pre_inoculated_state(self.Q_substrates)
+            self.state["adm1_state"] = self.adm1_state
+
+    def set_feedstock(self, feedstock, Q_substrates: list | None = None, rebuild_state: bool = True) -> None:
+        """
+        Attach or replace the feedstock and wire the influent through.
+
+        Assigning ``digester.feedstock`` alone is not enough: the ADM1 solver
+        also needs its influent DataFrame and density, and the initial state is
+        derived from the blend. This method does all of it in one step, so a
+        digester may be created without a feedstock and completed later.
+
+        Parameters
+        ----------
+        feedstock : Feedstock
+            The feedstock to attach.
+        Q_substrates : list of float, optional
+            New substrate feed rates [m³/d]. Keeps the current rates when omitted.
+        rebuild_state : bool, default True
+            Re-derive the pre-inoculated steady state from the new blend.
+            Set False to keep the current biological state.
+        """
+        self.feedstock = feedstock
+        if Q_substrates is not None:
+            self.Q_substrates = list(Q_substrates)
+
+        from ...substrates.feedstock import Feedstock as _Feedstock
+
+        if isinstance(feedstock, _Feedstock):
+            self.adm1.set_influent_dataframe(feedstock.get_influent_dataframe(Q=self.Q_substrates))
+            self.adm1.set_influent_density(feedstock.blended_density(self.Q_substrates))
+            if rebuild_state:
+                self.adm1_state = self._build_pre_inoculated_state(self.Q_substrates)
+
+        if self._initialized:
+            self.state["adm1_state"] = self.adm1_state
+            self.state["Q_substrates"] = self.Q_substrates
+
+    # ------------------------------------------------------------------
+    # Component lifecycle
+    # ------------------------------------------------------------------
+
+    def initialize(self, initial_state: dict[str, Any] | None = None) -> None:
+        """
+        Initialize the digester state and attached gas storage.
+
+        Accepted keys in *initial_state*:
+
+        * ``adm1_state`` : list of 41 floats (full ADM1 state vector).
+          When omitted and ``Q_substrates`` is supplied with a
+          :class:`Feedstock`, a pre-inoculated steady-state vector at pH 7
+          is computed automatically from the blended influent.
+        * ``Q_substrates`` : list of substrate feed rates [m³/d].  When
+          supplied with a :class:`Feedstock`, the underlying ADM1 solver's
+          influent DataFrame and density are wired automatically.
+        * ``gas_storage`` : dict forwarded to the attached gas storage.
+        """
+        if initial_state is None:
+            initial_state = {}
+
+        # --- Substrate feed: auto-wire the influent DataFrame/density ---
+        Q_substrates = initial_state.get("Q_substrates")
+        if Q_substrates is not None:
+            self.Q_substrates = list(Q_substrates)
+
+            from ...substrates.feedstock import Feedstock as _Feedstock
+
+            if isinstance(self.feedstock, _Feedstock):
+                self.adm1.set_influent_dataframe(self.feedstock.get_influent_dataframe(Q=self.Q_substrates))
+                self.adm1.set_influent_density(self.feedstock.blended_density(self.Q_substrates))
+
+        # --- Biological state vector ---
+        if "adm1_state" in initial_state and initial_state["adm1_state"] is not None:
+            self.adm1_state = list(initial_state["adm1_state"])
+        elif Q_substrates is not None:
+            from ...substrates.feedstock import Feedstock as _Feedstock
+
+            if isinstance(self.feedstock, _Feedstock):
+                self.adm1_state = self._build_pre_inoculated_state(self.Q_substrates)
+            else:
+                self.adm1_state = [0.01] * _ADM1_STATE_SIZE
+        else:
+            self.adm1_state = [0.01] * _ADM1_STATE_SIZE
+
+        # When dynamic volume is enabled, initialise V_liq below the
+        # geometric maximum so the digester fills up over the first transient.
+        if self._dynamic_volume:
+            V_liq_init = max(1.0e-6, self._V_liq_max * self._initial_fill_fraction)
+            self.V_liq = V_liq_init
+            self.adm1.V_liq = V_liq_init
+
+        self.state = {
+            "adm1_state": self.adm1_state,
+            "Q_substrates": self.Q_substrates,
+            "Q_gas": 0.0,
+            "Q_ch4": 0.0,
+            "Q_co2": 0.0,
+            "pH": 7.0,
+            "VFA": 0.0,
+            "TAC": 0.0,
+            "TS": 0.0,
+            # Filtered hydraulic retention time tracked via the first-order
+            # lag dHRT/dt + HRT*(Q_in/V_S) = 1, so the reported value rises
+            # from start-up toward V_S/Q_in with time constant HRT_ss itself.
+            "HRT": 0.0,
+            # Current sludge volume [m³]. Equals self.V_liq; kept in
+            # self.state so it round-trips through to_dict / from_dict.
+            "V_liq": self.V_liq,
+        }
+
+        gs_state = initial_state.get("gas_storage")
+        try:
+            self.gas_storage.initialize(gs_state)
+        except Exception:  # noqa: BLE001 - state restore is best-effort; start fresh on any failure
+            self.gas_storage.initialize()
+
+        self._initialized = True
+
+    def _build_pre_inoculated_state(self, Q_substrates) -> list:
+        """
+        Build a pre-inoculated initial state from the feedstock blend.
+
+        Particulate pools at retention-factor steady state; dissolved species
+        for a healthy digester at pH 7; biomass concentrations above the
+        bistability washout threshold so methanogenesis is active from t = 0.
+        """
+        fs = self.feedstock
+        conc = fs.blended_concentrations(Q_substrates)
+        Q_total = float(np.sum(fs.actual_Q(Q_substrates))) if hasattr(fs, "actual_Q") else float(np.sum(Q_substrates))
+        V_liq = float(self.V_liq)
+        T_ad = float(self.T_ad)
+
+        # --- Acid-base constants (temperature-corrected to T_ad) ---
+        R_gas = 0.08314
+        T_base = 298.15
+        K_a_va = 10.0**-4.86
+        K_a_bu = 10.0**-4.82
+        K_a_pro = 10.0**-4.88
+        K_a_ac = 10.0**-4.76
+        K_a_co2 = 10.0**-6.35
+        K_a_IN = 10.0**-9.25
+        K_w = 1.0e-14 * np.exp((55900.0 / (100.0 * R_gas)) * (1.0 / T_base - 1.0 / T_ad))
+
+        # --- Target pH 7 and typical healthy-digester dissolved concentrations ---
+        S_H_0 = 10.0**-7.0
+        S_ac_0, S_pro_0, S_bu_0, S_va_0 = 0.10, 0.02, 0.01, 0.01
+        S_co2_0 = 0.18
+        S_nh4_0 = conc.get("S_nh4", 0.0) * 1.5
+        if S_nh4_0 <= 0.0:
+            # A tank without its own substrate feed (post-digester, digestate
+            # store) gets an all-zero blend, so the inoculum would start with
+            # zero ammonium — and the charge balance at pH 7 would have to be
+            # closed with strong ions alone: 0.149 kmol/m3, 8.5x the ADM1da
+            # reference state. Real digestate carries its ammonium along, and
+            # the TAC formula subtracts exactly that strong-ion difference, so
+            # such a tank reported almost no acid capacity (negative in stores).
+            # Seed the ADM1da/SIMBA# reference inoculum instead.
+            S_nh4_0 = _ADM1DA_INOCULUM_S_NH4
+
+        S_ac_ion_0 = K_a_ac / (K_a_ac + S_H_0) * S_ac_0
+        S_pro_ion_0 = K_a_pro / (K_a_pro + S_H_0) * S_pro_0
+        S_bu_ion_0 = K_a_bu / (K_a_bu + S_H_0) * S_bu_0
+        S_va_ion_0 = K_a_va / (K_a_va + S_H_0) * S_va_0
+        S_nh3_0 = K_a_IN / (K_a_IN + S_H_0) * S_nh4_0
+        S_hco3_0 = K_a_co2 * S_co2_0 / (S_H_0 + K_a_co2)
+
+        vfa_kmol_0 = S_ac_ion_0 / 64.0 + S_pro_ion_0 / 112.0 + S_bu_ion_0 / 160.0 + S_va_ion_0 / 208.0
+
+        # Charge balance, closed the way the ADM1da substrate characterisation
+        # does it (Schlattmann 2011): ``S_cation`` is fixed at zero and
+        # ``S_anion`` absorbs the balance — it may go negative for net-cationic
+        # material. Closing it the other way round (solving for S_cation) left
+        # the state with 0.10-0.15 kmol/m3 of strong cations, up to four times
+        # the ADM1da reference state, and a tank without its own substrate feed
+        # ended up with strong cations but no ammonium at all. The TAC formula
+        # subtracts the strong-ion difference, so those states reported an acid
+        # capacity far too low — negative in long-retention stores.
+        #
+        # Only the DIFFERENCE ``S_cation - S_anion`` enters pH and speciation,
+        # and that difference is unchanged here: the chemistry of the initial
+        # state is identical, only the bookkeeping now follows the convention
+        # the influent already uses.
+        S_cation_0 = 0.0
+        S_anion_0 = S_nh4_0 - S_nh3_0 + S_H_0 - S_hco3_0 - vfa_kmol_0 - K_w / S_H_0
+
+        # --- Particulate pools at retention-factor steady state ---
+        D = Q_total / V_liq if V_liq > 0.0 else 0.0
+        dT = T_ad - 308.15
+        k_dis_PF = 0.4 * (1.035**dT)
+        k_dis_PS = 0.04 * (1.035**dT)
+        k_hyd = 4.0 * (1.07**dT)
+
+        ret_PF = D / (D + k_dis_PF) if (D + k_dis_PF) > 0.0 else 0.0
+        ret_PS = D / (D + k_dis_PS) if (D + k_dis_PS) > 0.0 else 0.0
+
+        X_PF_ch_ss = conc.get("X_PF_ch", 0.0) * ret_PF
+        X_PF_pr_ss = conc.get("X_PF_pr", 0.0) * ret_PF
+        X_PF_li_ss = conc.get("X_PF_li", 0.0) * ret_PF
+        X_PS_ch_ss = conc.get("X_PS_ch", 0.0) * ret_PS
+        X_PS_pr_ss = conc.get("X_PS_pr", 0.0) * ret_PS
+        X_PS_li_ss = conc.get("X_PS_li", 0.0) * ret_PS
+
+        denom_hyd = D + k_hyd
+        X_S_ch_0 = (k_dis_PF * X_PF_ch_ss + k_dis_PS * X_PS_ch_ss) / denom_hyd
+        X_S_pr_0 = (k_dis_PF * X_PF_pr_ss + k_dis_PS * X_PS_pr_ss) / denom_hyd
+        X_S_li_0 = (k_dis_PF * X_PF_li_ss + k_dis_PS * X_PS_li_ss) / denom_hyd
+
+        X_I_0 = conc.get("X_I", 0.0)
+
+        p_h2_0, p_ch4_0, p_co2_0 = 1.02e-5, 0.65, 0.33
+        p_tot_0 = p_h2_0 + p_ch4_0 + p_co2_0
+
+        return [
+            0.01,
+            0.001,
+            0.05,
+            S_va_0,
+            S_bu_0,
+            S_pro_0,
+            S_ac_0,
+            1.0e-7,
+            1.0e-4,
+            S_co2_0,
+            S_nh4_0,
+            0.0,
+            X_PS_ch_ss,
+            X_PS_pr_ss,
+            X_PS_li_ss,
+            X_PF_ch_ss,
+            X_PF_pr_ss,
+            X_PF_li_ss,
+            X_S_ch_0,
+            X_S_pr_0,
+            X_S_li_0,
+            X_I_0,
+            0.50,
+            0.50,
+            0.30,
+            0.40,
+            0.30,
+            1.20,
+            0.30,
+            S_cation_0,
+            S_anion_0,
+            S_va_ion_0,
+            S_bu_ion_0,
+            S_pro_ion_0,
+            S_ac_ion_0,
+            S_hco3_0,
+            S_nh3_0,
+            p_h2_0,
+            p_ch4_0,
+            p_co2_0,
+            p_tot_0,
+        ]
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _has_valid_state_input(self) -> bool:
+        """Return True if the ADM1 model has both a state input and a non-empty Q array."""
+        state_input = getattr(self.adm1, "_state_input", None)
+        q_array = getattr(self.adm1, "_Q", None)
+        return state_input is not None and q_array is not None and len(q_array) > 0
+
+    def _compute_indicators(self) -> dict[str, float]:
+        """Compute pH, VFA, and TAC from the current state (Schlattmann 2011)."""
+        st = self.adm1_state
+        inhib = ADMParams.get_inhibition_params(self.adm1._R, self.adm1._T_base, self.adm1._T_ad)
+        try:
+            S_H = ADM1._calc_ph(
+                st[_IDX_S_NH4],
+                st[_IDX_S_NH3],
+                st[_IDX_S_HCO3],
+                st[_IDX_S_AC_ION],
+                st[_IDX_S_PRO_ION],
+                st[_IDX_S_BU_ION],
+                st[_IDX_S_VA_ION],
+                st[_IDX_S_CATION],
+                st[_IDX_S_ANION],
+                inhib["K_w"],
+            )
+            pH = -np.log10(max(float(S_H), 1.0e-14))
+        except Exception:  # noqa: BLE001 - numeric fallback to neutral pH if the acid-base solve fails
+            pH = 7.0
+
+        # VFA [kg HAc-eq/m³] (Schlattmann 2011)
+        M_HAc = 60.0
+        COD_AC, COD_PRO, COD_BU, COD_VA = 64.0, 112.0, 160.0, 208.0
+        vfa = M_HAc * (
+            float(st[_IDX_S_AC]) / COD_AC
+            + float(st[_IDX_S_PRO]) / COD_PRO
+            + float(st[_IDX_S_BU]) / COD_BU
+            + float(st[_IDX_S_VA]) / COD_VA
+        )
+
+        # TAC [kg CaCO3/m³] (titration endpoint pH 5; Schlattmann 2011)
+        H_pH5 = 1.0e-5
+        a_nh4 = inhib["K_a_IN"] / (H_pH5 + inhib["K_a_IN"])
+        a_co2 = inhib["K_a_co2"] / (H_pH5 + inhib["K_a_co2"])
+        a_ac = inhib["K_a_ac"] / (H_pH5 + inhib["K_a_ac"])
+        a_pro = inhib["K_a_pro"] / (H_pH5 + inhib["K_a_pro"])
+        a_bu = inhib["K_a_bu"] / (H_pH5 + inhib["K_a_bu"])
+        a_va = inhib["K_a_va"] / (H_pH5 + inhib["K_a_va"])
+
+        total_N = float(st[_IDX_S_NH4]) + float(st[_IDX_S_NH3])
+        total_IC = float(st[_IDX_S_CO2])
+        total_ac_mol = float(st[_IDX_S_AC]) / COD_AC
+        total_pro_mol = float(st[_IDX_S_PRO]) / COD_PRO
+        total_bu_mol = float(st[_IDX_S_BU]) / COD_BU
+        total_va_mol = float(st[_IDX_S_VA]) / COD_VA
+        ion_ac_mol = float(st[_IDX_S_AC_ION]) / COD_AC
+        ion_pro_mol = float(st[_IDX_S_PRO_ION]) / COD_PRO
+        ion_bu_mol = float(st[_IDX_S_BU_ION]) / COD_BU
+        ion_va_mol = float(st[_IDX_S_VA_ION]) / COD_VA
+
+        tac_mol = (
+            (float(st[_IDX_S_NH3]) - a_nh4 * total_N)
+            + (float(st[_IDX_S_HCO3]) - a_co2 * total_IC)
+            + (ion_ac_mol - a_ac * total_ac_mol)
+            + (ion_pro_mol - a_pro * total_pro_mol)
+            + (ion_bu_mol - a_bu * total_bu_mol)
+            + (ion_va_mol - a_va * total_va_mol)
+            + float(st[_IDX_S_ANION])
+            - float(st[_IDX_S_CATION])
+        )
+        tac = 50.0 * tac_mol
+
+        if tac <= 0.0:
+            # An acid capacity of zero or less is chemically impossible for a
+            # digestate at neutral pH: it means the state's strong-ion split
+            # does not follow the ADM1da convention (S_cation = 0), so the
+            # ion term of the TAC formula over-subtracts. Reporting NaN keeps
+            # the artefact out of FOS/TAC ratios — dividing by a value drifting
+            # through zero produced numbers in the 1e9 range — and makes the
+            # broken state visible instead of silently plausible.
+            if not Digester._tac_warned:
+                Digester._tac_warned = True
+                warnings.warn(
+                    f"Digester '{self.component_id}': TAC <= 0 "
+                    f"({tac:.3g} kg CaCO3/m3). The strong-ion difference "
+                    f"S_cation-S_anion={float(st[_IDX_S_CATION]) - float(st[_IDX_S_ANION]):.4g} "
+                    "kmol/m3 exceeds the carbonate buffer, which the ADM1da TAC "
+                    "formula subtracts — usually a sign that the state carries "
+                    "too little ammonium. TAC/FOS-TAC reported as NaN.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            tac = float("nan")
+
+        ts = calc_total_solids(st)  # % TS (Proline Teqwave MW 300 surrogate)
+        return {"pH": pH, "VFA": vfa, "TAC": tac, "TS": ts}
+
+    # ------------------------------------------------------------------
+    # Step
+    # ------------------------------------------------------------------
+
+    def step(self, t: float, dt: float, inputs: dict[str, Any]) -> dict[str, Any]:
+        """
+        Integrate the ADM1 ODE by *dt* days and return outputs.
+
+        Inputs may include:
+          - ``Q_substrates`` : fresh substrate feed rates [m³/d]
+          - ``Q_in``         : effluent flow from an upstream digester [m³/d]
+          - ``state_in``     : 41-element state from upstream digester
+
+        Returns a dict with ``Q_out``, ``state_out``, ``Q_gas``, ``Q_ch4``,
+        ``Q_co2``, ``pH``, ``VFA``, ``TAC``, ``gas_storage``.
+        """
+        if "Q_substrates" in inputs:
+            self.Q_substrates = inputs["Q_substrates"]
+
+        if "state_in" in inputs and "Q_in" in inputs:
+            Q_in = float(inputs["Q_in"])
+            state_in = inputs["state_in"]
+
+            self.adm1.create_influent(self.Q_substrates, int(t / dt))
+            Q_sub = float(np.sum(self.adm1._Q)) if self.adm1._Q is not None else 0.0
+            Q_total = Q_in + Q_sub
+
+            if Q_total > 0 and len(state_in) >= _N_LIQUID_STATE:
+                for idx in range(_N_LIQUID_STATE):
+                    c_sub = float(self.adm1._state_input[idx])
+                    c_in = float(state_in[idx])
+                    self.adm1._state_input[idx] = (c_sub * Q_sub + c_in * Q_in) / Q_total
+                # The ODE reads the total volumetric flow from ``_Q`` (sum), so
+                # collapse the per-substrate breakdown into a single mixed flow.
+                self.adm1._Q = [Q_total]
+        else:
+            self.adm1.create_influent(self.Q_substrates, int(t / dt))
+
+        # When dynamic volume is enabled, drive Q_out from an overflow weir
+        # at V_max instead of letting the ODE enforce volume conservation.
+        # V_liq is treated as constant within one ODE step and advanced
+        # explicitly afterwards using the cached q_S_loss.
+        if self._dynamic_volume:
+            V_prev = float(self.adm1.V_liq)
+            Q_out_weir = max(0.0, (V_prev - self._V_liq_max) / self._tau_out)
+            self.adm1._Q_out_override = Q_out_weir
+        else:
+            Q_out_weir = None
+            self.adm1._Q_out_override = None
+
+        # ODE tolerances default to the accurate truth-generation settings; they can
+        # be loosened via env vars (ADM1_SOLVE_RTOL / _ATOL / _MAXSTEP_FRAC) for a
+        # faster, slightly-less-accurate integration — e.g. the expensive UKF
+        # sigma-point propagation on stiff trajectories (see run_ukf_references.py).
+        rtol = float(os.environ.get("ADM1_SOLVE_RTOL", "1e-6"))
+        atol = float(os.environ.get("ADM1_SOLVE_ATOL", "1e-8"))
+        max_step_frac = float(os.environ.get("ADM1_SOLVE_MAXSTEP_FRAC", "0.1"))
+        max_step = max(max_step_frac * dt, 1.0e-3)
+
+        if get_solver_backend() == "adm1jl":
+            # Julia/Rodas4P backend — ADM1jl's solver applied to the same
+            # 41-state ADM1da right-hand side. Enabled with PYADM1_SOLVER=adm1jl.
+            from ...core import adm1_julia
+
+            try:
+                new_state = adm1_julia.integrate_step(
+                    self.adm1,
+                    self.adm1_state,
+                    t,
+                    t + dt,
+                    rtol=rtol,
+                    atol=atol,
+                    max_step=max_step,
+                )
+            except Exception as exc:
+                # Same diagnostic contract as the scipy branch: the caller must
+                # be able to tell *which* digester failed, not just that the
+                # solver did.
+                raise RuntimeError(f"ADM1 integration failed in '{self.component_id}': {exc}") from exc
+
+            self.adm1_state = new_state.tolist()
+            if self._dynamic_volume:
+                # q_S_loss is a state function. The scipy path caches it during
+                # the last RHS evaluation; here evaluate it at the returned
+                # state so the volume balance below uses this step's value.
+                self.adm1._q_S_loss_last = adm1_julia.q_s_loss_eval(self.adm1, self.adm1_state)
+        else:
+            result = solve_ivp(
+                fun=self.adm1.rhs_callable(),
+                t_span=(t, t + dt),
+                y0=self.adm1_state,
+                method="BDF",
+                rtol=rtol,
+                atol=atol,
+                max_step=max_step,
+            )
+            if not result.success:
+                raise RuntimeError(f"ADM1 integration failed in '{self.component_id}': {result.message}")
+            self.adm1_state = list(result.y[:, -1])
+
+        # Advance the sludge-volume mass balance now that the ODE has
+        # settled and q_S_loss has been cached on the model.
+        if self._dynamic_volume:
+            Q_in_for_V = float(np.sum(self.adm1._Q)) if self.adm1._Q is not None else 0.0
+            q_loss = float(self.adm1._q_S_loss_last)
+            V_prev = float(self.adm1.V_liq)
+            V_new = max(1.0e-6, V_prev + (Q_in_for_V - Q_out_weir - q_loss) * dt)
+            self.adm1.V_liq = V_new
+            self.V_liq = V_new
+            self.state["V_liq"] = V_new
+
+        q_gas, q_ch4, q_co2, _, _ = self.adm1.calc_gas(
+            self.adm1_state[_IDX_P_H2],
+            self.adm1_state[_IDX_P_CH4],
+            self.adm1_state[_IDX_P_CO2],
+            self.adm1_state[_IDX_P_TOTAL],
+        )
+
+        indicators = self._compute_indicators()
+        self.state["adm1_state"] = self.adm1_state
+        self.state["Q_gas"] = q_gas
+        self.state["Q_ch4"] = q_ch4
+        self.state["Q_co2"] = q_co2
+        self.state.update(indicators)
+
+        if self._dynamic_volume:
+            # Effluent leaving the reactor over this step (overflow weir).
+            Q_out = float(Q_out_weir)
+        else:
+            # Legacy: Q_out tracks Q_in (volume-conservation enforced by the ODE).
+            Q_out = float(np.sum(self.adm1._Q)) if self._has_valid_state_input() else float(np.sum(self.Q_substrates))
+
+        # First-order lag for the reported HRT: dHRT/dt + HRT*(Q_in/V_S) = 1.
+        # Exact discrete update over dt with piecewise-constant a = Q_in/V_S.
+        Q_in_total = float(np.sum(self.adm1._Q)) if self.adm1._Q is not None else 0.0
+        hrt_prev = float(self.state.get("HRT", 0.0))
+        if Q_in_total > 0.0 and self.V_liq > 0.0:
+            a = Q_in_total / self.V_liq
+            decay = float(np.exp(-a * dt))
+            hrt_new = hrt_prev * decay + (1.0 / a) * (1.0 - decay)
+        else:
+            hrt_new = hrt_prev + dt
+        self.state["HRT"] = hrt_new
+
+        gs_outputs = self.gas_storage.step(
+            t=t,
+            dt=dt,
+            inputs={
+                "Q_gas_in_m3_per_day": float(q_gas),
+                "Q_gas_out_m3_per_day": 0.0,
+                "vent_to_flare": True,
+            },
+        )
+        self.gas_storage.outputs_data["Q_gas_in_m3_per_day"] = float(q_gas)
+
+        self.outputs_data = {
+            "Q_out": Q_out,
+            "state_out": self.adm1_state,
+            "Q_gas": float(q_gas),
+            "Q_ch4": float(q_ch4),
+            "Q_co2": float(q_co2),
+            "pH": indicators["pH"],
+            "VFA": indicators["VFA"],
+            "TAC": indicators["TAC"],
+            "TS": indicators["TS"],
+            "HRT": float(hrt_new),
+            "V_liq": float(self.V_liq),
+            "Q_gas_to_storage_m3_per_day": float(q_gas),
+            "gas_storage": {
+                "component_id": self.gas_storage.component_id,
+                "stored_volume_m3": gs_outputs["stored_volume_m3"],
+                "pressure_bar": gs_outputs["pressure_bar"],
+                "vented_volume_m3": gs_outputs["vented_volume_m3"],
+                "Q_gas_supplied_m3_per_day": gs_outputs["Q_gas_supplied_m3_per_day"],
+            },
+        }
+        return self.outputs_data
+
+    # ------------------------------------------------------------------
+    # Calibration parameter API (delegates to the underlying ADM1 instance)
+    # ------------------------------------------------------------------
+
+    def apply_calibration_parameters(self, parameters: dict) -> None:
+        """Apply calibration overrides to the underlying ADM1 model."""
+        self.adm1.set_calibration_parameters(parameters)
+
+    def get_calibration_parameters(self) -> dict:
+        """Return currently applied calibration parameters."""
+        return self.adm1.get_calibration_parameters()
+
+    def clear_calibration_parameters(self) -> None:
+        """Clear all calibration overrides."""
+        self.adm1.clear_calibration_parameters()
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the digester to a configuration dictionary."""
+        return {
+            "component_id": self.component_id,
+            "component_type": self.component_type.value,
+            "name": self.name,
+            "V_liq": self._V_liq_max,
+            "V_gas": self.V_gas,
+            "T_ad": self.T_ad,
+            "dynamic_volume": self._dynamic_volume,
+            "initial_fill_fraction": self._initial_fill_fraction,
+            "outflow_time_constant": self._tau_out,
+            "adm1_backend": self.adm1.backend,
+            "inputs": self.inputs,
+            "outputs": self.outputs,
+            "state": self.state,
+        }
+
+    @classmethod
+    def from_dict(cls, config: dict[str, Any], feedstock=None) -> Digester:
+        """Reconstruct a Digester from a configuration dictionary."""
+        digester = cls(
+            component_id=config["component_id"],
+            feedstock=feedstock,
+            V_liq=config.get("V_liq", 1977.0),
+            V_gas=config.get("V_gas", 304.0),
+            T_ad=config.get("T_ad", 315.15),
+            name=config.get("name"),
+            dynamic_volume=config.get("dynamic_volume", False),
+            initial_fill_fraction=config.get("initial_fill_fraction", 1.0),
+            outflow_time_constant=config.get("outflow_time_constant", 1.0),
+            backend=config.get("adm1_backend"),
+        )
+        digester.inputs = config.get("inputs", [])
+        digester.outputs = config.get("outputs", [])
+        if "state" in config:
+            digester.initialize(config["state"])
+            # Restore the live sludge volume after initialize() applied the
+            # nominal initial_fill_fraction.
+            if digester._dynamic_volume and "V_liq" in config["state"]:
+                V_curr = float(config["state"]["V_liq"])
+                digester.V_liq = V_curr
+                digester.adm1.V_liq = V_curr
+                digester.state["V_liq"] = V_curr
+        return digester

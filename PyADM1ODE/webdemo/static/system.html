@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyADM1ODE · 组件系统 / 三通道</title>
+<link rel="stylesheet" href="/static/system.css">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<div class="hud hud-tl">
+  <div class="hud-title">组件系统 <span class="dim">/ 三通道分步</span></div>
+  <div class="hud-sub" id="meta-line">正在构建厂站…</div>
+</div>
+
+<div class="hud hud-tr" id="kpis"></div>
+
+<div class="hud hud-legend" id="legend"></div>
+
+<div class="dock">
+  <button id="play" class="btn-round" title="播放 / 暂停 (空格)">❚❚</button>
+  <div class="speed" id="speed">
+    <button data-s="0.5">0.5×</button>
+    <button data-s="1" class="on">1×</button>
+    <button data-s="2">2×</button>
+    <button data-s="4">4×</button>
+  </div>
+  <input type="range" id="scrub" min="0" max="0" value="0" step="1">
+  <div class="clock" id="clock">0.0 d</div>
+  <a class="back" href="/">← 仪表盘</a>
+</div>
+
+<div class="credit">三个通道：物料 / 沼气 / 能量 · 数值取自 plant.simulate 的逐步输出</div>
+
+<div class="loading" id="loading"><div class="spin"></div><div>正在仿真两级厂站…</div></div>
+
+<script src="/static/system.js"></script>
+</body>
+</html>

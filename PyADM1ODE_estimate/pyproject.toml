@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyadm1ode_estimation"
+version = "0.2.5"
+description = "State estimation for PyADM1ODE biogas plant models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "pyadm1 @ git+https://github.com/dgaida/PyADM1ODE.git",
+    "numpy",
+    "scipy",
+    "pandas",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "ruff",
+]
+deep_learning = [
+    "torch",
+    "scikit-learn",
+]
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocs-static-i18n",
+    "mkdocstrings[python]",
+    "mkdocs-mermaid2-plugin",
+    "mike",
+    "pymdown-extensions",
+    # mkdocstrings 1.0.6, the last release for Python 3.10, fails with pymdown-extensions 12.
+    "pymdown-extensions<12; python_version < '3.11'",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyadm1ode_estimation*"]
+
+[tool.setuptools.package-data]
+# Shipped model parameters of the reference estimators.
+"pyadm1ode_estimation.estimation.reference" = ["*.json", "*.pt"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: integration tests that spin up worker pools or take >5 s",
+]
+
+[tool.black]
+# Pin the target so a local black and the CI's black cannot disagree: without this,
+# the default target follows whatever Python the tool happens to run under.
+target-version = ["py310"]
+
+[tool.ruff]
+target-version = "py310"

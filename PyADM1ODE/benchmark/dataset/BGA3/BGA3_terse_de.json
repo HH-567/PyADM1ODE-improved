@@ -1,0 +1,119 @@
+{
+  "id": "BGA3_terse_de",
+  "input": {
+    "modality": "text",
+    "language": "de",
+    "content": "Güllebasierte Biogasanlage mit zwei Fermentern F1 und F2 (je 6×26 m, Kuppeldach), einem Nachgärer N1 (6×26 m, Kuppeldach) und einem Gärrestlager G1 (6×28 m). Außerdem vorhanden sind ein BHKW mit 500 kW elektrischer Leistung und eine Notfackel."
+  },
+  "regime": "underspecified",
+  "reference": {
+    "components": [
+      {
+        "id": "F1",
+        "type": "Digester",
+        "label": "Fermenter 1",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 2867,
+            "obligation": "missing_ask",
+            "formula": "pi/4*26^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 2838, "max": 2896}
+          },
+          "V_gas": {
+            "value": 719,
+            "obligation": "missing_ask",
+            "accept": {"min": 718, "max": 720},
+            "note": "Kuppeldach in Text; Volumen nicht genannt"
+          },
+          "T_ad": {
+            "value": 313.15,
+            "obligation": "missing_ask",
+            "accept": {"min": 312.83, "max": 313.47},
+            "rationale": "guellebasiert -> mesophil 40 C"
+          }
+        }
+      },
+      {"id": "F2", "type": "Digester", "label": "Fermenter 2", "obligation": "given", "params": {"_same_as": "F1"}},
+      {"id": "N1", "type": "Digester", "label": "Nachgärer", "obligation": "given", "params": {"_same_as": "F1"}},
+      {
+        "id": "G1",
+        "type": "Digester",
+        "label": "Gärrestlager",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 3325,
+            "obligation": "missing_ask",
+            "formula": "pi/4*28^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 3291, "max": 3359}
+          },
+          "V_gas": {"value": 799, "obligation": "missing_ask", "accept": {"min": 798, "max": 800}},
+          "T_ad": {
+            "value": 293.15,
+            "obligation": "missing_ask",
+            "accept": {"min": 292.85, "max": 293.45},
+            "note": "unbeheizt ~ Umgebung"
+          }
+        }
+      },
+      {"id": "F1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "F2_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "N1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "G1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {
+        "id": "bhkw",
+        "type": "CHP",
+        "label": "BHKW 500 kW",
+        "obligation": "given",
+        "params": {
+          "P_el_nom": {"value": 500.0, "obligation": "given", "accept": {"min": 499, "max": 501}},
+          "eta_el": {"value": 0.4, "obligation": "missing_ask", "accept": {"min": 0.3996, "max": 0.4004}},
+          "eta_th": {"value": 0.45, "obligation": "missing_ask", "accept": {"min": 0.4495, "max": 0.4505}}
+        }
+      },
+      {"id": "bhkw_flare", "type": "Flare", "label": "Notfackel", "obligation": "auto", "auto_created": true}
+    ],
+    "connections": [
+      {
+        "from": "F1",
+        "to": "N1",
+        "type": "liquid",
+        "obligation": "inferred",
+        "rationale": "Kaskade nicht explizit genannt; aus Benennung F1/F2 -> N1 -> G1 erschliessbar"
+      },
+      {"from": "F2", "to": "N1", "type": "liquid", "obligation": "inferred"},
+      {"from": "N1", "to": "G1", "type": "liquid", "obligation": "inferred"},
+      {"from": "F1", "to": "F1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F2", "to": "F2_storage", "type": "gas", "obligation": "auto"},
+      {"from": "N1", "to": "N1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "G1", "to": "G1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F1_storage", "to": "bhkw", "type": "gas", "obligation": "inferred"},
+      {"from": "F2_storage", "to": "bhkw", "type": "gas", "obligation": "inferred"},
+      {"from": "N1_storage", "to": "bhkw", "type": "gas", "obligation": "inferred"},
+      {"from": "G1_storage", "to": "bhkw", "type": "gas", "obligation": "inferred"},
+      {"from": "bhkw", "to": "bhkw_flare", "type": "gas", "obligation": "auto"}
+    ]
+  },
+  "oracle": {
+    "substrate_feed": "je 50 t/d Maissilage über die Dosierer (Dos1 in F1, Dos2 in F2) und je 20 m³/d Rindergülle aus zwei Vorgruben (in F1 und F2)",
+    "bgaa.exists": false,
+    "chp.exists": true,
+    "bhkw.P_el_nom": 500.0,
+    "bhkw.eta_el": 0.4,
+    "bhkw.eta_th": 0.45,
+    "F1.V_gas": 719,
+    "F2.V_gas": 719,
+    "N1.V_gas": 719,
+    "G1.V_gas": 799,
+    "F1.T_ad": 313.15,
+    "F2.T_ad": 313.15,
+    "N1.T_ad": 313.15,
+    "G1.T_ad": 293.15,
+    "F1.fill_fraction": 0.9,
+    "G1.fill_fraction": 0.9,
+    "digestate_cascade": "F1->N1, F2->N1, N1->G1",
+    "gas_routing": "Alle vier Behälter (F1, F2, N1, G1) speisen das BHKW"
+  },
+  "metadata": {"difficulty": "medium", "split": "test"}
+}

@@ -1,0 +1,933 @@
+# ============================================================================
+# pyadm1/configurator/plant_builder.py
+# ============================================================================
+"""
+Main biogas plant model with component management and JSON I/O.
+
+This module provides the BiogasPlant class which manages multiple components
+and their connections to build complete biogas plant configurations.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from pyadm1.components.base import Component, ComponentType
+from pyadm1.components.biological.digester import Digester
+from pyadm1.configurator.connection_manager import Connection
+from pyadm1.configurator.graph import Graph, normalize_candidate
+from pyadm1.substrates.feedstock import Feedstock
+
+
+class BiogasPlant:
+    """
+    Complete biogas plant model with multiple components.
+
+    Manages component lifecycle, connections, and simulation.
+    Supports JSON-based configuration.
+
+    Attributes:
+        plant_name (str): Name of the biogas plant.
+        components (Dict[str, Component]): Dictionary of all plant components.
+        connections (List[Connection]): List of connections between components.
+        simulation_time (float): Current simulation time in days.
+
+    Example:
+        >>> from pyadm1 import Feedstock, BiogasPlant
+        >>> from pyadm1.components.biological import Digester
+        >>>
+        >>> feedstock = Feedstock(["maize_silage_milk_ripeness", "swine_manure"], feeding_freq=24)
+        >>> plant = BiogasPlant("My Plant")
+        >>> digester = Digester("dig1", feedstock, V_liq=1200, V_gas=216, T_ad=315.15)
+        >>> plant.add_component(digester)
+        >>> plant.initialize()
+    """
+
+    def __init__(self, plant_name: str = "Biogas Plant"):
+        """
+        Initialize biogas plant.
+
+        Args:
+            plant_name (str): Name of the plant. Defaults to "Biogas Plant".
+        """
+        self.plant_name = plant_name
+        self.components: dict[str, Component] = {}
+        self.connections: list[Connection] = []
+        self.simulation_time = 0.0
+
+    def add_component(self, component: Component) -> None:
+        """
+        Add a component to the plant.
+
+        Args:
+            component (Component): Component to add to the plant.
+
+        Raises:
+            ValueError: If component with same ID already exists.
+        """
+        if component.component_id in self.components:
+            raise ValueError(f"Component with ID '{component.component_id}' already exists")
+        self.components[component.component_id] = component
+
+    def add_connection(self, connection: Connection) -> None:
+        """
+        Add a connection between components.
+
+        Args:
+            connection (Connection): Connection to add.
+
+        Raises:
+            ValueError: If source or target component not found.
+        """
+        # Verify components exist
+        if connection.from_component not in self.components:
+            raise ValueError(f"Source component '{connection.from_component}' not found")
+        if connection.to_component not in self.components:
+            raise ValueError(f"Target component '{connection.to_component}' not found")
+
+        # Update component connections
+        from_comp = self.components[connection.from_component]
+        to_comp = self.components[connection.to_component]
+
+        from_comp.add_output(connection.to_component)
+        to_comp.add_input(connection.from_component)
+
+        self.connections.append(connection)
+
+    def initialize(self) -> None:
+        """
+        Initialize all components.
+
+        Note: Most components auto-initialize in their constructor.
+        This method is kept for compatibility and to ensure any
+        components that need explicit initialization are handled.
+        """
+        for component in self.components.values():
+            if not component._initialized:
+                component.initialize()
+
+    def step(self, dt: float) -> dict[str, dict[str, Any]]:
+        """
+        Perform one simulation time step for all components.
+
+        This uses a multi-pass execution model:
+        1. Execute digesters to produce gas → storages
+        2. Execute CHPs to determine gas demand → storages
+        3. Execute storages to supply gas → CHPs (re-execute with actual supply)
+        4. Execute BiogasUpgrading units: re-execute storages with BGAA demand,
+           then re-execute BGAA with actual supply, then re-execute its flare.
+
+        Args:
+            dt (float): Time step in days.
+
+        Returns:
+            Dict[str, Dict[str, Any]]: Results from all components.
+        """
+        results = {}
+
+        # Build dependency graph
+        execution_order = self._get_execution_order()
+
+        # ========================================================================
+        # PASS 1: Execute all non-storage, non-heating components
+        # ========================================================================
+        # Heaters are also deferred (until after Pass 3) because their CHP
+        # input ``P_th_available`` is only meaningful once the CHP has run
+        # in Pass 3 with the actual gas supply. Stepping a heater here would
+        # see a stale/zero ``P_th`` and (a) charge the auxiliary boiler for
+        # heat the CHP would otherwise have supplied and (b) double-count the
+        # heater's ``energy_consumed`` if we then re-stepped it in Pass 3.
+        for component_id in execution_order:
+            component = self.components[component_id]
+
+            # Skip storages in first pass
+            if component.component_type.value == "storage":
+                continue
+            # Skip heaters in first pass (see comment above)
+            if component.component_type.value == "heating":
+                continue
+
+            # Gather inputs from connected components. For "liquid"
+            # cascade connections (e.g. primary digester -> post-digester),
+            # the upstream component writes its effluent as Q_out /
+            # state_out but the downstream digester reads its inflow as
+            # Q_in / state_in -- remap on the fly so the cascade actually
+            # carries flow. Other connection types (gas, heat, ...) keep
+            # their keys verbatim.
+            inputs = {}
+            # Liquid inflows are ACCUMULATED, not overwritten: a post-digester
+            # fed by two fermenters receives the sum of both flows, and the
+            # state handed downstream is their flow-weighted mixture. Before
+            # this, the last input processed silently won and half the flow
+            # disappeared. ``split_fraction`` on the connection lets one source
+            # feed several targets with a share each (separator recirculation).
+            q_liquid = 0.0
+            state_load: list[float] | None = None
+            for input_id in component.inputs:
+                if input_id not in self.components:
+                    continue
+                input_comp = self.components[input_id]
+                out = input_comp.outputs_data
+                conn_type = None
+                split = 1.0
+                for conn in self.connections:
+                    if conn.from_component == input_id and conn.to_component == component_id:
+                        conn_type = conn.connection_type
+                        split = float(getattr(conn, "split_fraction", 1.0))
+                        break
+                if conn_type == "liquid":
+                    q = float(out.get("Q_out", 0.0)) * split
+                    if q <= 0.0:
+                        continue
+                    q_liquid += q
+                    state = out.get("state_out")
+                    if state is not None:
+                        if state_load is None:
+                            state_load = [0.0] * len(state)
+                        for idx, conc in enumerate(state):
+                            if idx < len(state_load):
+                                state_load[idx] += q * float(conc)
+                else:
+                    inputs.update(out)
+            if q_liquid > 0.0:
+                inputs["Q_in"] = q_liquid
+                if state_load is not None:
+                    inputs["state_in"] = [load / q_liquid for load in state_load]
+
+            # Execute component
+            output = component.step(self.simulation_time, dt, inputs)
+            results[component_id] = output
+
+        # ========================================================================
+        # PASS 2: Execute gas storages with gas production from digesters
+        # ========================================================================
+        for component_id in execution_order:
+            component = self.components[component_id]
+
+            if component.component_type.value != "storage":
+                continue
+
+            # Get gas input from connected digesters
+            gas_input = 0.0
+            for conn in self.connections:
+                if conn.to_component == component_id and conn.connection_type == "gas":
+                    source_comp = self.components.get(conn.from_component)
+                    if source_comp and source_comp.component_type.value == "digester":
+                        gas_input += source_comp.outputs_data.get("Q_gas", 0.0)
+
+            # Execute storage with production only (no demand yet)
+            storage_inputs = {
+                "Q_gas_in_m3_per_day": gas_input,
+                "Q_gas_out_m3_per_day": 0.0,  # No demand yet
+                "vent_to_flare": True,
+            }
+
+            output = component.step(self.simulation_time, dt, storage_inputs)
+            results[component_id] = output
+
+        # ========================================================================
+        # PASS 3: Handle gas demand from CHPs
+        # ========================================================================
+        for component_id, component in self.components.items():
+            if component.component_type.value != "chp":
+                continue
+
+            # Calculate CHP gas demand based on current operating point
+            P_el_nom = component.P_el_nom
+            eta_el = component.eta_el
+            load_setpoint = 1.0  # Full load by default
+
+            # Calculate required gas (m³/d biogas at 60% CH4)
+            E_ch4 = 10.0  # kWh/m³ CH4
+            CH4_content = 0.60
+            P_required = load_setpoint * P_el_nom  # kW
+            Q_ch4_required = (P_required / eta_el) * 24.0 / E_ch4  # m³/d CH4
+            Q_gas_required = Q_ch4_required / CH4_content  # m³/d biogas
+
+            # Find all gas storages connected to this CHP
+            connected_storages = []
+            for conn in self.connections:
+                if conn.to_component == component_id and conn.connection_type == "gas":
+                    storage_id = conn.from_component
+                    if storage_id in self.components:
+                        storage_comp = self.components[storage_id]
+                        if storage_comp.component_type.value == "storage":
+                            connected_storages.append(storage_id)
+
+            if not connected_storages:
+                continue
+
+            # Distribute demand equally among storages
+            demand_per_storage = Q_gas_required / len(connected_storages)
+
+            total_supplied = 0.0
+
+            # Re-execute storages with gas demand.
+            #
+            # IMPORTANT: do not pass ``Q_gas_in_m3_per_day`` again here.
+            # The digester's production for this step was already routed
+            # into the storage in Pass 2 and is now sitting in
+            # ``storage.stored_volume_m3``. The storage's ``step()`` adds
+            # ``Q_in * dt`` to ``stored_volume_m3`` on every call, so
+            # re-passing the production would double-count it -- inflating
+            # both inventory growth and (when the storage is saturated)
+            # vented gas, producing the "vented > produced" symptom in
+            # whole-run mass balances.
+            #
+            # We also need to preserve any vent that happened in Pass 2,
+            # because the storage resets ``vented_volume_m3`` to 0 at the
+            # start of every ``step()`` call. After this Pass-3 call, the
+            # output dict's ``vented_volume_m3`` would otherwise only
+            # contain Pass 3's vent (typically 0; Pass 2 carries the
+            # overflow vents). Carry the Pass-2 value through manually.
+            for storage_id in connected_storages:
+                storage = self.components[storage_id]
+
+                pass2_vented = float(results.get(storage_id, {}).get("vented_volume_m3", 0.0))
+
+                storage_inputs = {
+                    "Q_gas_in_m3_per_day": 0.0,
+                    "Q_gas_out_m3_per_day": demand_per_storage,
+                    "vent_to_flare": True,
+                }
+
+                storage_output = storage.step(self.simulation_time, dt, storage_inputs)
+
+                # Merge Pass-2 vent volume into the final per-step report.
+                # ``cumulative_vented_m3`` already tracks all vents across
+                # both passes inside the storage component itself, so we
+                # only need to repair the per-step field here.
+                storage_output["vented_volume_m3"] = float(storage_output.get("vented_volume_m3", 0.0)) + pass2_vented
+                results[storage_id] = storage_output
+
+                # Accumulate supplied gas
+                supplied = storage_output.get("Q_gas_supplied_m3_per_day", 0.0)
+                total_supplied += supplied
+
+            # Re-execute CHP with actual gas supply
+            chp_inputs = {
+                "Q_gas_supplied_m3_per_day": total_supplied,
+                "load_setpoint": load_setpoint,
+            }
+
+            chp_output = component.step(self.simulation_time, dt, chp_inputs)
+            results[component_id] = chp_output
+
+            # ============================================================
+            # PASS 3b: Re-execute heaters connected to this CHP with the
+            # CHP's now-current thermal output. Without this, heaters
+            # always see ``P_th_available = 0`` from the CHP's
+            # initialised/stale outputs and charge all heat demand to the
+            # auxiliary boiler -- even when the CHP has plenty of free
+            # thermal power.
+            #
+            # When multiple heaters share one CHP, split the available
+            # thermal power equally. This is a defensible-but-simple
+            # allocation that preserves energy conservation
+            # (``sum(P_th_used) <= chp.P_th``). A demand-proportional split
+            # would require a separate iteration.
+            # ============================================================
+            connected_heaters = [
+                conn.to_component
+                for conn in self.connections
+                if conn.from_component == component_id
+                and conn.connection_type == "heat"
+                and conn.to_component in self.components
+                and self.components[conn.to_component].component_type.value == "heating"
+            ]
+
+            if connected_heaters:
+                P_th_per_heater = chp_output.get("P_th", 0.0) / len(connected_heaters)
+                for h_id in connected_heaters:
+                    heater = self.components[h_id]
+                    heater_inputs: dict[str, Any] = {"P_th_available": P_th_per_heater}
+                    # Forward any non-heat upstream inputs the heater may
+                    # need (e.g. T_digester from a connected digester).
+                    for conn in self.connections:
+                        if conn.to_component == h_id and conn.connection_type != "heat":
+                            source = self.components.get(conn.from_component)
+                            if source is not None:
+                                heater_inputs.update(source.outputs_data)
+                    results[h_id] = heater.step(self.simulation_time, dt, heater_inputs)
+
+        # ============================================================
+        # Catch any heaters NOT connected to a CHP. They were skipped in
+        # Pass 1 to avoid the stale-CHP-output problem, so they need to
+        # run here with their full upstream inputs but no CHP heat.
+        # ============================================================
+        stepped_heaters = {cid for cid in results if cid in self.components}
+        for component_id in execution_order:
+            component = self.components[component_id]
+            if component.component_type.value != "heating":
+                continue
+            if component_id in stepped_heaters:
+                continue
+            heater_inputs = {"P_th_available": 0.0}
+            for conn in self.connections:
+                if conn.to_component == component_id:
+                    source = self.components.get(conn.from_component)
+                    if source is not None:
+                        heater_inputs.update(source.outputs_data)
+            results[component_id] = component.step(self.simulation_time, dt, heater_inputs)
+
+        # ========================================================================
+        # PASS 4: Handle gas demand from BiogasUpgrading units
+        #
+        # Mirror of the CHP pass: re-execute connected storages with BGAA's
+        # capacity as demand, then re-execute the BGAA with the actually supplied
+        # volume, then update the downstream flare with the capacity overflow.
+        # Without this pass, storages never supply gas to BGAA and fill until the
+        # storage's internal overflow vent fires — causing the flare to activate
+        # spuriously at every timestep once the storage is full.
+        # ========================================================================
+        for component_id, component in self.components.items():
+            if component.component_type.value != "upgrading":
+                continue
+
+            # BGAA requests its full nominal capacity; supply is capped by storage level
+            Q_gas_demand = component.capacity_m3_per_day
+
+            connected_storages = [
+                conn.from_component
+                for conn in self.connections
+                if conn.to_component == component_id
+                and conn.connection_type == "gas"
+                and conn.from_component in self.components
+                and self.components[conn.from_component].component_type.value == "storage"
+            ]
+
+            if not connected_storages:
+                continue
+
+            demand_per_storage = Q_gas_demand / len(connected_storages)
+            total_supplied = 0.0
+
+            for storage_id in connected_storages:
+                storage = self.components[storage_id]
+
+                # Preserve the per-step vent logged in Pass 2 (same reason as CHP pass)
+                pass2_vented = float(results.get(storage_id, {}).get("vented_volume_m3", 0.0))
+
+                storage_inputs = {
+                    "Q_gas_in_m3_per_day": 0.0,  # already added in Pass 2; avoid double-count
+                    "Q_gas_out_m3_per_day": demand_per_storage,
+                    "vent_to_flare": True,
+                }
+                storage_output = storage.step(self.simulation_time, dt, storage_inputs)
+                storage_output["vented_volume_m3"] = float(storage_output.get("vented_volume_m3", 0.0)) + pass2_vented
+                results[storage_id] = storage_output
+                total_supplied += storage_output.get("Q_gas_supplied_m3_per_day", 0.0)
+
+            # Re-execute BGAA with actual gas supply
+            bgaa_output = component.step(self.simulation_time, dt, {"Q_gas_in_m3_per_day": total_supplied})
+            results[component_id] = bgaa_output
+
+            # Re-execute downstream flare with BGAA's capacity overflow
+            for conn in self.connections:
+                if conn.from_component != component_id or conn.connection_type != "gas":
+                    continue
+                flare_id = conn.to_component
+                if flare_id in self.components and self.components[flare_id].component_type.value == "flare":
+                    flare_inputs = {"Q_gas_in_m3_per_day": bgaa_output.get("Q_gas_out_m3_per_day", 0.0)}
+                    results[flare_id] = self.components[flare_id].step(self.simulation_time, dt, flare_inputs)
+
+        self.simulation_time += dt
+
+        return results
+
+    def simulate(
+        self,
+        duration: float,
+        dt: float = 1.0 / 24.0,
+        save_interval: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Run simulation for specified duration.
+
+        Args:
+            duration (float): Simulation duration in days.
+            dt (float): Time step in days. Defaults to 1 hour (1/24 day).
+            save_interval (Optional[float]): Interval for saving results in days.
+                If None, saves every step.
+
+        Returns:
+            List[Dict[str, Any]]: Simulation results at each saved time point.
+                Each entry contains 'time' and 'components' with component results.
+
+        Example:
+            >>> results = plant.simulate(duration=30, dt=1/24, save_interval=1.0)
+            >>> print(f"Simulated {len(results)} time points")
+        """
+        if save_interval is None:
+            save_interval = dt
+
+        results = []
+        next_save_time = self.simulation_time
+
+        n_steps = int(duration / dt)
+
+        for i in range(n_steps):
+            step_result = self.step(dt)
+
+            # Save results at specified interval
+            if self.simulation_time >= next_save_time:
+                results.append(
+                    {
+                        "time": self.simulation_time,
+                        "components": step_result,
+                    }
+                )
+                next_save_time += save_interval
+
+            if (i + 1) % 100 == 0:
+                print(f"Simulated {i + 1}/{n_steps} steps")
+
+        return results
+
+    def _get_execution_order(self) -> list[str]:
+        """
+        Determine execution order based on component dependencies.
+
+        Returns:
+            List[str]: Topologically sorted list of component IDs.
+        """
+        # Simple topological sort
+        visited = set()
+        order = []
+
+        def visit(comp_id: str) -> None:
+            """Recursive DFS helper: visit dependencies first, then append this component."""
+            if comp_id in visited:
+                return
+            visited.add(comp_id)
+
+            component = self.components[comp_id]
+            for input_id in component.inputs:
+                if input_id in self.components:
+                    visit(input_id)
+
+            order.append(comp_id)
+
+        for comp_id in self.components:
+            visit(comp_id)
+
+        return order
+
+    def to_graph(self) -> Graph:
+        """
+        Build the typed component/connection graph for this plant.
+
+        Serializes the plant exactly like the LLM benchmark does (the
+        ``components`` / ``connections`` dict produced by ``to_dict``) and
+        normalizes it into the benchmark ``Graph`` data model. The returned
+        graph has one ``Node`` per component (keyed by component id, carrying
+        its ``component_type`` and serialized scalar parameters) and one
+        ``Edge`` per connection (``liquid`` / ``gas`` / ``heat``).
+
+        Returns:
+            Graph: Graph with ``nodes`` (Dict[str, Node]) and ``edges``
+                (List[Edge]), identical to what ``normalize_candidate`` builds
+                in the benchmark.
+        """
+        candidate = {
+            "components": [comp.to_dict() for comp in self.components.values()],
+            "connections": [conn.to_dict() for conn in self.connections],
+        }
+        return normalize_candidate(candidate)
+
+    def visualize_graph(
+        self,
+        output_path: str | None = None,
+        dpi: int = 150,
+        title: str | None = None,
+    ) -> str:
+        """
+        Render the plant graph (see :meth:`to_graph`) to a PNG file.
+
+        Mirrors the Mermaid ``flowchart LR`` style used for the benchmark
+        dataset: components are drawn as rounded boxes laid out left-to-right by
+        process depth, liquid connections as solid labelled arrows and gas
+        connections as dotted labelled arrows (heat as dashed). Unlike the
+        dataset diagrams, no dataset-specific annotations (obligations,
+        confidences, reference ids) are shown -- only the plant's own
+        components and connections.
+
+        Args:
+            output_path (Optional[str]): Target PNG path. Defaults to
+                ``output/<plant_name>_graph.png`` relative to the repo root.
+            dpi (int): Resolution of the saved figure.
+            title (Optional[str]): Figure title. ``None`` (default) shows no
+                title.
+
+        Returns:
+            str: Path to the written PNG file.
+        """
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import networkx as nx
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+        graph = self.to_graph()
+
+        # Serialized component_type -> proper PyADM1ODE class name for display.
+        class_names = {
+            "digester": "Digester",
+            "storage": "GasStorage",
+            "chp": "CHP",
+            "flare": "Flare",
+            "heating": "HeatingSystem",
+            "boiler": "Boiler",
+            "separator": "Separator",
+            "upgrading": "BiogasUpgrading",
+            "mixer": "Mixer",
+        }
+
+        # Edge style per transport medium, matching the Mermaid dataset look:
+        # liquid = solid, gas = dotted, heat = dashed.
+        edge_styles = {
+            "liquid": {"linestyle": "solid", "color": "#333333", "label": "liquid"},
+            "gas": {"linestyle": "dotted", "color": "#C0703C", "label": "gas"},
+            "heat": {"linestyle": "dashed", "color": "#C44E52", "label": "heat"},
+        }
+
+        # --- Layered left-to-right layout (process depth = longest path) ------
+        dg = nx.DiGraph()
+        dg.add_nodes_from(graph.nodes)
+        for edge in graph.edges:
+            dg.add_edge(edge.src, edge.dst)
+
+        # Longest-path depth from any source; robust against cycles.
+        depth: dict[str, int] = {n: 0 for n in dg.nodes}
+        try:
+            for n in nx.topological_sort(dg):
+                for succ in dg.successors(n):
+                    depth[succ] = max(depth[succ], depth[n] + 1)
+        except nx.NetworkXUnfeasible:
+            depth = {n: 0 for n in dg.nodes}  # cyclic: fall back to single column
+
+        # Group nodes by depth (column) and assign vertical slots.
+        columns: dict[int, list[str]] = {}
+        for nid in graph.nodes:
+            columns.setdefault(depth[nid], []).append(nid)
+
+        def _key_info(ctype: str, p: dict[str, Any]) -> list[str]:
+            """Most relevant sizing/rating values per component type."""
+
+            def num(key, fmt="{:g}"):
+                v = p.get(key)
+                return fmt.format(v) if isinstance(v, (int, float)) else None
+
+            lines: list[str] = []
+            if ctype == "digester":
+                if num("V_liq"):
+                    lines.append(f"V_liq {num('V_liq')} m³")
+                if num("V_gas"):
+                    lines.append(f"V_gas {num('V_gas')} m³")
+                if isinstance(p.get("T_ad"), (int, float)):
+                    lines.append(f"T {p['T_ad'] - 273.15:.0f} °C")
+            elif ctype == "storage":
+                if num("capacity_m3"):
+                    lines.append(f"V_gas {num('capacity_m3')} m³")
+            elif ctype == "chp":
+                if num("P_el_nom"):
+                    lines.append(f"P_el {num('P_el_nom')} kW")
+                if num("eta_el"):
+                    lines.append(f"η_el {float(p['eta_el']) * 100:.0f} %")
+            elif ctype == "upgrading":
+                if num("capacity_m3h"):
+                    lines.append(f"{num('capacity_m3h')} m³/h")
+            elif ctype == "separator":
+                if num("separation_efficiency"):
+                    lines.append(f"η {float(p['separation_efficiency']) * 100:.0f} %")
+            elif ctype == "flare":
+                if num("destruction_efficiency"):
+                    lines.append(f"η {float(p['destruction_efficiency']) * 100:.0f} %")
+            elif ctype == "heating":
+                if isinstance(p.get("target_temperature"), (int, float)):
+                    t = p["target_temperature"]
+                    t = t - 273.15 if t > 200 else t
+                    lines.append(f"T {t:.0f} °C")
+            return lines
+
+        # Per-node info line; box width adapts to the longest text shown.
+        infos: dict[str, str] = {
+            nid: "  ·  ".join(_key_info(graph.nodes[nid].ctype, graph.nodes[nid].params)) for nid in graph.nodes
+        }
+        longest = max([len(infos[n]) for n in infos] + [len(n) for n in graph.nodes] + [10])
+        box_h = 1.3
+        box_w = max(3.2, 0.095 * longest + 1.0)
+
+        # --- Layered left-to-right layout (columns by process depth) ----------
+        x_gap, y_gap = box_w + 1.8, 1.9
+        pos: dict[str, tuple] = {}
+        max_rows = max((len(c) for c in columns.values()), default=1)
+        for col, nids in sorted(columns.items()):
+            n_rows = len(nids)
+            offset = (max_rows - n_rows) / 2.0
+            for row, nid in enumerate(sorted(nids)):
+                pos[nid] = (col * x_gap, -(row + offset) * y_gap)
+
+        n_cols = max(columns) + 1 if columns else 1
+        fig, ax = plt.subplots(figsize=(max(7, n_cols * (box_w + 1.8)), max(4, max_rows * 1.9)))
+
+        for nid, (x, y) in pos.items():
+            node = graph.nodes[nid]
+            ctype = node.ctype
+            box = FancyBboxPatch(
+                (x - box_w / 2, y - box_h / 2),
+                box_w,
+                box_h,
+                boxstyle="round,pad=0.03,rounding_size=0.15",
+                linewidth=1.4,
+                edgecolor="#34495E",
+                facecolor="#ECF3FB",
+                zorder=2,
+            )
+            ax.add_patch(box)
+            ax.text(x, y + box_h * 0.22, nid, ha="center", va="center", fontsize=9, fontweight="bold", zorder=3)
+            ax.text(
+                x,
+                y + box_h * 0.02,
+                class_names.get(ctype, ctype),
+                ha="center",
+                va="center",
+                fontsize=7.5,
+                color="#555555",
+                zorder=3,
+            )
+            info = infos[nid]
+            if info:
+                ax.text(
+                    x,
+                    y - box_h * 0.28,
+                    info,
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                    color="#1A5276",
+                    zorder=3,
+                )
+
+        def _border(cx, cy, tx, ty):
+            """Point on the box border of (cx, cy) facing (tx, ty)."""
+            dx, dy = tx - cx, ty - cy
+            if dx == 0 and dy == 0:
+                return cx, cy
+            sx = (box_w / 2 + 0.06) / abs(dx) if dx else float("inf")
+            sy = (box_h / 2 + 0.06) / abs(dy) if dy else float("inf")
+            t = min(sx, sy)
+            return cx + dx * t, cy + dy * t
+
+        used_styles: dict[str, dict] = {}
+        # Bow gas edges up and heat edges down so parallel liquid/gas/heat
+        # connections separate; edges spanning intermediate columns bow more
+        # (like Mermaid) to clear the boxes in between.
+        bow_dir = {"liquid": 0.0, "gas": 1.0, "heat": -1.0}
+        for edge in graph.edges:
+            if edge.src not in pos or edge.dst not in pos:
+                continue
+            style = edge_styles.get(edge.etype, edge_styles["liquid"])
+            used_styles[edge.etype] = style
+            cx0, cy0 = pos[edge.src]
+            cx1, cy1 = pos[edge.dst]
+            # Start/end on the box borders so the arrow head stays visible.
+            x0, y0 = _border(cx0, cy0, cx1, cy1)
+            x1, y1 = _border(cx1, cy1, cx0, cy0)
+            span = abs(depth[edge.dst] - depth[edge.src])
+            direction = bow_dir.get(edge.etype, 0.0)
+            chord_x = abs(cx1 - cx0)
+            if chord_x < 0.1:  # same column (e.g. cyclic) -> sidestep
+                rad = 0.3
+            elif direction == 0.0 and span <= 1:  # adjacent liquid -> straight
+                rad = 0.0
+            else:
+                # Fixed apex offset (data units) regardless of span, so long
+                # multi-column edges bow gently instead of dipping far down.
+                apex = 0.8 if span <= 1 else 1.2
+                rad = direction * 2 * apex / chord_x
+            conn = f"arc3,rad={rad}"
+            # Body line in the medium's linestyle, but without a head, so a
+            # dotted gas line does not produce a dotted (broken) arrow head.
+            ax.add_patch(
+                FancyArrowPatch(
+                    (x0, y0),
+                    (x1, y1),
+                    connectionstyle=conn,
+                    arrowstyle="-",
+                    linewidth=1.6,
+                    linestyle=style["linestyle"],
+                    color=style["color"],
+                    shrinkA=1,
+                    shrinkB=2,
+                    zorder=1,
+                )
+            )
+            # Solid filled arrow head only (linewidth 0 -> no body line drawn).
+            ax.add_patch(
+                FancyArrowPatch(
+                    (x0, y0),
+                    (x1, y1),
+                    connectionstyle=conn,
+                    arrowstyle="-|>,head_length=5,head_width=3",
+                    mutation_scale=2.4,
+                    linewidth=0,
+                    color=style["color"],
+                    shrinkA=1,
+                    shrinkB=2,
+                    zorder=1,
+                )
+            )
+
+        legend = [
+            Line2D([0], [0], color=s["color"], linestyle=s["linestyle"], lw=1.6, label=s["label"])
+            for et, s in edge_styles.items()
+            if et in used_styles
+        ]
+        if legend:
+            ax.legend(handles=legend, loc="lower right", fontsize=8, title="connection", framealpha=0.9)
+        if title:
+            ax.set_title(title)
+        ax.axis("off")
+
+        # Tight content bounding box: boxes plus room for the edge bows
+        # (gas bows below, heat above). Sizing the figure to this box keeps the
+        # image height matched to the graph instead of leaving large gaps.
+        xs = [x for x, _ in pos.values()]
+        ys = [y for _, y in pos.values()]
+        pad = 0.5
+        x_lo, x_hi = min(xs) - box_w / 2 - pad, max(xs) + box_w / 2 + pad
+        y_lo = min(ys) - box_h / 2 - (1.4 if "gas" in used_styles else 0.0) - pad
+        y_hi = max(ys) + box_h / 2 + (1.4 if "heat" in used_styles else 0.0) + pad
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(y_lo, y_hi)
+        ax.set_aspect("equal", adjustable="box")
+
+        scale = 0.55
+        fig.set_size_inches((x_hi - x_lo) * scale, (y_hi - y_lo) * scale)
+        fig.tight_layout()
+
+        if output_path is None:
+            from pathlib import Path
+
+            repo_root = Path(__file__).resolve().parents[2]
+            out_dir = repo_root / "output"
+            out_dir.mkdir(exist_ok=True)
+            safe_name = self.plant_name.replace(" ", "_")
+            output_path = str(out_dir / f"{safe_name}_graph.png")
+
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    def to_json(self, filepath: str) -> None:
+        """
+        Save plant configuration to JSON file.
+
+        Args:
+            filepath (str): Path to JSON file.
+        """
+        config = {
+            "plant_name": self.plant_name,
+            "simulation_time": self.simulation_time,
+            "components": [comp.to_dict() for comp in self.components.values()],
+            "connections": [conn.to_dict() for conn in self.connections],
+        }
+
+        with open(filepath, "w") as f:
+            json.dump(config, f, indent=2)
+
+        print(f"Plant configuration saved to {filepath}")
+
+    @classmethod
+    def from_json(cls, filepath: str, feedstock: Feedstock | None = None) -> BiogasPlant:
+        """
+        Load plant configuration from JSON file.
+
+        Args:
+            filepath (str): Path to JSON file.
+            feedstock (Optional[Feedstock]): Feedstock object for digesters.
+                Required if plant has digesters.
+
+        Returns:
+            BiogasPlant: Loaded plant model.
+
+        Raises:
+            ValueError: If feedstock is None but plant contains digesters.
+        """
+        with open(filepath) as f:
+            config = json.load(f)
+
+        plant = cls(config.get("plant_name", "Biogas Plant"))
+        plant.simulation_time = config.get("simulation_time", 0.0)
+
+        # Create components.  Digesters need the supplied feedstock; for every
+        # other component type we delegate to the class's ``from_dict`` via the
+        # global component registry so all auto-attached children (gas storage,
+        # flares, mixers, sensors, …) round-trip without bespoke branches.
+        from pyadm1.components.registry import get_registry
+
+        registry = get_registry()
+        type_to_registry_key = {
+            ComponentType.DIGESTER: "Digester",
+            ComponentType.CHP: "CHP",
+            ComponentType.HEATING: "HeatingSystem",
+            ComponentType.STORAGE: "GasStorage",
+            ComponentType.FLARE: "Flare",
+            ComponentType.BOILER: "Boiler",
+            ComponentType.SEPARATOR: "Separator",
+            ComponentType.UPGRADING: "BiogasUpgrading",
+        }
+
+        for comp_config in config.get("components", []):
+            comp_type = ComponentType(comp_config["component_type"])
+
+            if comp_type == ComponentType.DIGESTER:
+                if feedstock is None:
+                    raise ValueError("Feedstock required for loading plant with digesters")
+                component = Digester.from_dict(comp_config, feedstock)
+            elif comp_type in type_to_registry_key:
+                cls_obj = registry.get_registered_components().get(type_to_registry_key[comp_type])
+                if cls_obj is None:
+                    raise ValueError(f"No registered class for component type: {comp_type}")
+                component = cls_obj.from_dict(comp_config)
+            else:
+                raise ValueError(f"Unknown component type: {comp_type}")
+
+            plant.add_component(component)
+
+        # Create connections
+        for conn_config in config.get("connections", []):
+            connection = Connection.from_dict(conn_config)
+            plant.add_connection(connection)
+
+        print(f"Plant configuration loaded from {filepath}")
+
+        return plant
+
+    def get_summary(self) -> str:
+        """
+        Get human-readable summary of plant configuration.
+
+        Returns:
+            str: Summary text with components and connections.
+        """
+        lines = [
+            f"=== {self.plant_name} ===",
+            f"Simulation time: {self.simulation_time:.2f} days",
+            f"\nComponents ({len(self.components)}):",
+        ]
+
+        for comp in self.components.values():
+            lines.append(f"  - {comp.name} ({comp.component_type.value})")
+
+        lines.append(f"\nConnections ({len(self.connections)}):")
+        for conn in self.connections:
+            from_name = self.components[conn.from_component].name
+            to_name = self.components[conn.to_component].name
+            lines.append(f"  - {from_name} -> {to_name} ({conn.connection_type})")
+
+        return "\n".join(lines)

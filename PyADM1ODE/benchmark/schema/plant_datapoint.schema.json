@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ivba-biogas/benchmark/plant_datapoint.schema.json",
+  "title": "PyADM1ODE LMM-Benchmark — Plant Datapoint",
+  "description": "Ein Datenpunkt = (multimodaler Input) + (kanonische, regelbasiert vervollstaendigte PyADM1ODE-Anlage als typisierter, parametrisierter Graph) + (obligation/accept/oracle fuer den Umgang mit Luecken). Bewertet wird in drei disjunkten Achsen, ob der vom LMM erzeugte Code denselben Graphen baut: Vollstaendigkeit (nichts weggelassen), Masse (Werte im Akzeptanzband) und Keine Erfindungen (nichts hinzugefuegt). Nur Groessen, die PyADM1ODE wirklich simuliert, sind Teil der Referenz.",
+  "type": "object",
+  "required": ["id", "input", "regime", "reference"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "description": "Eindeutige ID, z.B. <plant>_<modality>_<lang>_<variant>." },
+    "input": { "$ref": "#/$defs/input" },
+    "regime": {
+      "type": "string",
+      "enum": ["fully_specified", "underspecified"],
+      "description": "fully_specified = alle simulierten Werte stehen im Input; underspecified = Werte fehlen im Input und muessen beim Oracle erfragt werden. Einen dritten Fall (raten/defaulten) gibt es nicht."
+    },
+    "reference": { "$ref": "#/$defs/reference" },
+    "oracle": {
+      "type": "object",
+      "description": "Kanonische Antworten fuer den Multi-Turn-Modus: Schluessel = '<component>.<field>' oder freie Topologie-Schluessel, Wert = kanonischer Wert, den ein simuliertes Nutzer-Orakel auf eine Rueckfrage gibt.",
+      "additionalProperties": true
+    },
+    "metadata": { "$ref": "#/$defs/metadata" }
+  },
+
+  "$defs": {
+
+    "nodeObligation": {
+      "type": "string",
+      "description": "Woher die EXISTENZ des Bauteils stammt. Steuert, ob es fuer Score 1 (Vollstaendigkeit) Pflicht ist.",
+      "enum": ["given", "derivable", "inferred", "auto", "missing_ask"],
+      "$comment": "PFLICHT sind alle Werte ausser missing_ask. given=im Input genannt; derivable=aus dem Input erschliessbar; inferred=realistisch ergaenzt; auto=vom Package erzeugt (GasStorage je Digester, Flare je CHP/BGAA); missing_ask=Existenz unklar, darf gebaut werden, muss aber nicht. ERLAUBT (Score 3) ist jedes Bauteil der Referenz, auch ein optionales."
+    },
+
+    "edgeObligation": {
+      "type": "string",
+      "description": "Woher die VERBINDUNG stammt. Steuert, ob sie fuer Score 1 (Vollstaendigkeit) Pflicht ist.",
+      "enum": ["given", "inferred", "auto", "missing_ask"],
+      "$comment": "PFLICHT sind given, inferred und auto; missing_ask nicht -- die Kante darf gebaut werden (und gilt dann nicht als Erfindung), muss aber nicht. Nur diese vier Werte haben an einer Kante eine definierte Wirkung; 'derivable' waere hier stille Optionalitaet und ist daher nicht zugelassen."
+    },
+
+    "paramObligation": {
+      "type": "string",
+      "description": "Woher der WERT stammt. REINE DOKUMENTATION -- der Wert wird immer gegen sein accept-Band geprueft, die obligation aendert die Strenge nicht.",
+      "enum": ["given", "derivable", "missing_ask"],
+      "$comment": "given=im Input genannt; derivable=aus Angaben im Input berechenbar (siehe 'formula'); missing_ask=nicht im Input, das Oracle nennt ihn auf Rueckfrage exakt. Es gibt bewusst KEINEN Wert fuer 'das Modell muss raten': jede simulierte Groesse steht entweder im Input oder ist erfragbar. Ein Datenpunkt, der eine ungenannte Annahme verlangt, waere nicht fair bewertbar."
+    },
+
+    "acceptSpec": {
+      "type": "object",
+      "description": "Akzeptanzband statt Punktwert. DIE BREITE HAENGT NUR DARAN, OB DER WERT UEBERNOMMEN ODER GERECHNET WIRD: ohne 'formula' = +-0.1 % (der Wert steht im Input oder das Oracle nennt ihn exakt, nur Rundung darf abweichen -- 40 C als 313.0 statt 313.15 K); mit 'formula' = +-1 % (der Wert wird gerechnet, die Rundungsstelle variiert, z.B. pi=3.14 statt 3.14159). Fehlt 'accept' ganz, wird exakt verglichen -- so bei kategorialen Werten wie separator_type: wer fragt, bekommt den exakten Typ. Ein breiteres Band ist ein Autorenfehler, es macht den Datenpunkt unbewertbar.",
+      "required": ["min", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "min": { "type": "number" },
+        "max": { "type": "number" }
+      }
+    },
+
+    "paramField": {
+      "type": "object",
+      "description": "Der wiederverwendbare Atom-Baustein: EIN simulierter Parameter mit Wert, obligation und Akzeptanzband. Der Wert wird IMMER gegen das Band geprueft -- 'obligation' dokumentiert nur, woher er stammt, und aendert die Strenge nicht.",
+      "additionalProperties": false,
+      "required": ["obligation"],
+      "properties": {
+        "value": {
+          "type": ["number", "string", "boolean", "null"],
+          "description": "Kanonischer Referenzwert (null = bewusst nicht gesetzt)."
+        },
+        "obligation": { "$ref": "#/$defs/paramObligation" },
+        "accept": { "$ref": "#/$defs/acceptSpec" },
+        "formula": { "type": "string", "description": "Ableitungsformel bei derivable; nennt zugleich die Zwischenwerte, die nicht als eigene Parameter gefuehrt werden (z.B. 'pi/4*28^2*6 * 0.90 (Fuellgrad)')." },
+        "rationale": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+
+    "paramMap": {
+      "type": "object",
+      "description": "Sammlung von ParamFields. '_same_as' ist ein Authoring-Makro: kopiert params eines anderen Knotens (vor dem Matching expandiert).",
+      "properties": {
+        "_same_as": { "type": "string", "description": "ID des Knotens, dessen params uebernommen werden." }
+      },
+      "additionalProperties": { "$ref": "#/$defs/paramField" }
+    },
+
+    "component": {
+      "type": "object",
+      "description": "Ein simulierter Knoten des Anlagengraphen.",
+      "required": ["id", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "description": "PyADM1ODE-Komponententyp.",
+          "enum": ["Digester", "GasStorage", "Separator", "CHP", "Flare", "HeatingSystem", "Boiler", "Mixer", "BiogasUpgrading"]
+        },
+        "label": { "type": "string", "description": "Klartext-Name aus der Skizze, z.B. 'Fermenter 1'." },
+        "obligation": { "$ref": "#/$defs/nodeObligation" },
+        "auto_created": {
+          "type": "boolean",
+          "description": "true = von einem Helper erzeugt (z.B. add_digester -> GasStorage; add_chp -> Flare). Nicht vom Nutzer anzugeben; auto-Knoten werden ueber die Topologie zugeordnet, nicht ueber den Namen."
+        },
+        "params": {
+          "$ref": "#/$defs/paramMap",
+          "description": "Simulierte Parameter (z.B. Digester: V_liq, V_gas, T_ad; Separator: separator_type; CHP: P_el_nom, eta_el, eta_th; HeatingSystem: target_temperature). Ausschliesslich Groessen, die PyADM1ODE serialisiert -- Zwischenwerte der Herleitung (Rohgeometrie D/H_wall, fill_fraction) gehoeren NICHT hierher, sie stehen im 'formula'-String des abgeleiteten Parameters."
+        },
+        "note": { "type": "string" }
+      }
+    },
+
+    "connection": {
+      "type": "object",
+      "description": "Eine typisierte, gerichtete Kante. Nur Kanten, die PyADM1ODE wirklich routet, zaehlen (liquid-Kaskade, Digester->GasStorage, GasStorage->CHP, CHP->Heizung/Flare, Digester->Separator).",
+      "required": ["from", "to", "type", "obligation"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "type": { "type": "string", "enum": ["liquid", "gas", "heat"] },
+        "obligation": { "$ref": "#/$defs/edgeObligation" },
+        "rationale": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+
+    "reference": {
+      "type": "object",
+      "description": "Die kanonische Anlage als typisierter, parametrisierter Graph.",
+      "required": ["components", "connections"],
+      "additionalProperties": false,
+      "properties": {
+        "components": { "type": "array", "items": { "$ref": "#/$defs/component" }, "minItems": 1 },
+        "connections": { "type": "array", "items": { "$ref": "#/$defs/connection" } }
+      }
+    },
+
+    "input": {
+      "type": "object",
+      "required": ["modality"],
+      "additionalProperties": false,
+      "properties": {
+        "modality": {
+          "type": "string",
+          "enum": ["text", "image", "pid", "photo", "hybrid", "pdf"],
+          "description": "Form der Aufgabe. text=Beschreibung; image/pid/photo=Bild; hybrid=Bild plus ergaenzender Text; pdf=beigefuegtes Dokument (z.B. ein Angebotsschreiben), optional mit ergaenzendem Text in 'content'."
+        },
+        "language": { "type": "string", "enum": ["de", "en"] },
+        "content": { "type": "string", "description": "Textbeschreibung (bei text/hybrid) bzw. ergaenzende Angaben (bei pdf)." },
+        "image_path": { "type": "string", "description": "Pfad zur Skizze/Foto/P&ID (bei image/pid/photo/hybrid)." },
+        "document_path": {
+          "type": "string",
+          "description": "Pfad zum PDF (bei modality=pdf), relativ zum Datenpunkt-Ordner. Das Dokument muss eine Textebene haben -- gescannte PDFs ohne Textebene werden derzeit nicht unterstuetzt."
+        }
+      }
+    },
+
+    "metadata": {
+      "type": "object",
+      "description": "Nur Angaben, die sich NICHT aus 'reference' ableiten lassen (Anzahl Digester, Topologie etc. gehoeren nicht hierher).",
+      "additionalProperties": false,
+      "properties": {
+        "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] },
+        "split": { "type": "string", "enum": ["train", "dev", "test"] }
+      }
+    }
+  }
+}

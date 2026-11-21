@@ -1,0 +1,87 @@
+{
+  "id": "BGA1_sketch_full",
+  "input": {
+    "modality": "hybrid",
+    "language": "de",
+    "image_path": "BGA1_sketch.png",
+    "content": "Die Fermenter F1 und F2 sowie der Nachgärer N1 werden mesophil bei 40 °C betrieben. Der maximale Füllgrad aller Behälter beträgt 90 %. Der Gasraum (Kuppeldach plus nicht befüllter Kopfraum) beträgt je 870 m³. Das Gärrestlager G1 ist unbeheizt (ca. 20 °C) und hat einen maximalen Füllgrad von 90 % und einen Gasraum (Kuppeldach plus Kopfraum) von 994 m³. Der Digestatstrom verläuft von F1 und F2 in den Nachgärer N1 und von dort in das Gärrestlager G1. Das Biogas aller Behälter wird der Biogasaufbereitung zugeführt. Der Separator ist eine Schneckenpresse und erhält Gärrest aus dem Nachgärer N1. Die Biogasaufbereitung erreicht eine Methanausbeute von 98 % bei einem Methangehalt von 97 % im eingespeisten Biomethan.\n\nSubstratzufuhr: Maissilage über den Feststoffdosierer (auf F1 und F2 verteilt) und Rindergülle aus der Vorgrube (in F1 und F2)."
+  },
+  "regime": "fully_specified",
+  "reference": {
+    "components": [
+      {
+        "id": "F1",
+        "type": "Digester",
+        "label": "Fermenter 1",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 3325,
+            "obligation": "derivable",
+            "formula": "pi/4*28^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 3291, "max": 3359}
+          },
+          "V_gas": {"value": 870, "obligation": "given", "accept": {"min": 869, "max": 871}},
+          "T_ad": {"value": 313.15, "obligation": "given", "accept": {"min": 312.83, "max": 313.47}}
+        }
+      },
+      {"id": "F2", "type": "Digester", "label": "Fermenter 2", "obligation": "given", "params": {"_same_as": "F1"}},
+      {"id": "N1", "type": "Digester", "label": "Nachgärer", "obligation": "given", "params": {"_same_as": "F1"}},
+      {
+        "id": "G1",
+        "type": "Digester",
+        "label": "Gärrestlager",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 3817,
+            "obligation": "derivable",
+            "formula": "pi/4*30^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 3778, "max": 3856}
+          },
+          "V_gas": {"value": 994, "obligation": "given", "accept": {"min": 993, "max": 995}},
+          "T_ad": {"value": 293.15, "obligation": "given", "accept": {"min": 292.85, "max": 293.45}}
+        }
+      },
+      {"id": "F1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "F2_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "N1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "G1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {
+        "id": "sep",
+        "type": "Separator",
+        "label": "Separator",
+        "obligation": "given",
+        "params": {"separator_type": {"value": "screw_press", "obligation": "given"}}
+      },
+      {
+        "id": "bgaa",
+        "type": "BiogasUpgrading",
+        "label": "Biogasaufbereitung",
+        "obligation": "given",
+        "params": {
+          "capacity_m3h": {"value": 500.0, "obligation": "given", "accept": {"min": 499, "max": 501}},
+          "ch4_recovery": {"value": 0.98, "obligation": "given", "accept": {"min": 0.979, "max": 0.981}},
+          "ch4_content_out": {"value": 0.97, "obligation": "given", "accept": {"min": 0.969, "max": 0.971}}
+        }
+      },
+      {"id": "bgaa_flare", "type": "Flare", "label": "Notfackel", "obligation": "auto", "auto_created": true}
+    ],
+    "connections": [
+      {"from": "F1", "to": "N1", "type": "liquid", "obligation": "given"},
+      {"from": "F2", "to": "N1", "type": "liquid", "obligation": "given"},
+      {"from": "N1", "to": "G1", "type": "liquid", "obligation": "given"},
+      {"from": "N1", "to": "sep", "type": "liquid", "obligation": "given"},
+      {"from": "F1", "to": "F1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F2", "to": "F2_storage", "type": "gas", "obligation": "auto"},
+      {"from": "N1", "to": "N1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "G1", "to": "G1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F1_storage", "to": "bgaa", "type": "gas", "obligation": "given"},
+      {"from": "F2_storage", "to": "bgaa", "type": "gas", "obligation": "given"},
+      {"from": "N1_storage", "to": "bgaa", "type": "gas", "obligation": "given"},
+      {"from": "G1_storage", "to": "bgaa", "type": "gas", "obligation": "given"},
+      {"from": "bgaa", "to": "bgaa_flare", "type": "gas", "obligation": "auto"}
+    ]
+  },
+  "metadata": {"difficulty": "easy", "split": "test"}
+}

@@ -1,0 +1,204 @@
+# ============================================================================
+# pyproject.toml
+# ============================================================================
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyadm1ode_calibration"
+version = "0.2.8"
+description = "Parameter calibration framework for PyADM1ODE biogas plant models"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Daniel Gaida", email = "daniel.gaida@th-koeln.de"}
+]
+maintainers = [
+    {name = "Daniel Gaida", email = "daniel.gaida@th-koeln.de"}
+]
+keywords = [
+    "ADM1",
+    "anaerobic digestion",
+    "biogas",
+    "calibration",
+    "parameter estimation",
+    "optimization"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "pyadm1 @ git+https://github.com/dgaida/PyADM1ODE.git",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0",
+    "ruff>=0.5.0",
+    "mypy>=1.0",
+]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.20.0",
+    # mkdocstrings 1.0.6, the last release for Python 3.10, fails with pymdown-extensions 12.
+    "pymdown-extensions<12; python_version < '3.11'",
+    "mkdocs-static-i18n>=1.2.0",
+    "mkdocs-mermaid2-plugin>=0.6.0",
+    "mike>=2.0.0",
+    "interrogate>=1.7.0",
+]
+# Only needed for method="particle_swarm"; every other optimizer comes
+# from scipy. Both the 0.6 tuple API and the 1.0 OptimizeResult are
+# supported, so the lower bound stays loose.
+pso = [
+    "pyswarm",
+]
+# Optional derivative-free solvers: method="cma_es", "bobyqa" and "dfols".
+cmaes = [
+    "cma>=3.3",
+]
+bobyqa = [
+    "Py-BOBYQA>=1.4",
+]
+dfols = [
+    "DFO-LS>=1.4",
+]
+optimizers = [
+    "pyadm1ode_calibration[pso,cmaes,bobyqa,dfols]",
+]
+all = [
+    "pyadm1ode_calibration[dev,docs,optimizers]",
+]
+
+[project.urls]
+Homepage = "https://github.com/dgaida/PyADM1ODE_calibration"
+Repository = "https://github.com/dgaida/PyADM1ODE_calibration"
+Documentation = "https://github.com/dgaida/PyADM1ODE_calibration#readme"
+"Bug Tracker" = "https://github.com/dgaida/PyADM1ODE_calibration/issues"
+
+[tool.setuptools]
+# Ship the library only. Auto-discovery without a filter also picked up
+# data/, docs/, output/, scripts/ and tests/ (see the old top_level.txt),
+# and would package anything else that carries an __init__.py.
+packages = {find = {include = ["pyadm1ode_calibration*"]}}
+
+[tool.setuptools.package-data]
+pyadm1ode_calibration = ["py.typed"]
+
+[tool.black]
+line-length = 127
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 127
+target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+# PlantSchema reports every defect in a schema file as ValueError, including the ones
+# found with isinstance. That contract is what the loaders and their tests rely on, so
+# TRY004's TypeError would be a breaking change for a purely stylistic gain.
+"pyadm1ode_calibration/io/loaders/schema.py" = ["TRY004"]
+# The window bounds in these tests are naive on purpose: handling naive input is the
+# behaviour under test, so DTZ001 would ask us to delete the test case.
+"tests/unit/test_io/test_builder.py" = ["DTZ001"]
+"tests/unit/test_io/test_tabular_csv.py" = ["DTZ001"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = "pyadm1ode.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--doctest-modules",
+    "--doctest-glob=*.md",
+    "--strict-markers",
+    "--cov=pyadm1ode_calibration",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+source = ["pyadm1ode_calibration"]
+omit = [
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-init-module = false
+ignore-magic = true
+ignore-semiprivate = false
+ignore-private = false
+ignore-property-decorators = false
+ignore-module = false
+ignore-nested-functions = true
+fail-under = 95
+exclude = ["setup.py", "docs", "build", "tests"]
+ignore-regex = ["^__repr__$", "^__str__$", "^__len__$"]
+verbose = 2
+color = true

@@ -1,0 +1,154 @@
+{
+  "id": "BGA1_text_de",
+  "input": {
+    "modality": "text",
+    "language": "de",
+    "content": "Die Biogasanlage BGA1 verarbeitet überwiegend Gülle und wird über drei Wege beschickt. Ein Feststoffdosierer bringt ein flüssiges Mischsubstrat mit rund 80 Tonnen pro Tag ein und beschickt damit die beiden Fermenter F1 und F2. Daneben gibt es eine Vorgrube mit den Maßen 5 mal 10 Meter, in der etwa 20 Kubikmeter Gülle pro Tag gesammelt und über eine Pumpe ebenfalls in F1 und F2 gefördert werden. Drei baugleiche Vorlagebehälter mit jeweils 11 mal 3,5 Meter sind über eine gemeinsame Pumpe an die beiden Fermenter angeschlossen.\n\nDie zwei Hauptfermenter F1 und F2 haben jeweils einen Durchmesser von 28 Metern und eine Höhe von 6 Metern und sind mit je drei Paddelrührwerken ausgestattet. Beide tragen ein Kuppeldach, das zugleich als Gasspeicher dient. Der Gärrest fließt anschließend in den Nachgärer N1, der ebenfalls 28 Meter Durchmesser und 6 Meter Höhe misst und mit einem Paddelrührwerk sowie einem Langachsrührwerk arbeitet. Auch N1 besitzt ein Kuppeldach. Aus dem Nachgärer gelangt das Material in das Gärrestlager G1 mit 30 Metern Durchmesser und 6 Metern Höhe, das mit zwei Tauchmotorrührwerken ausgerüstet ist.\n\nDas in den Behältern entstehende Biogas wird gesammelt und einer Biogasaufbereitungsanlage mit einer Kapazität von 500 Kubikmetern pro Stunde zugeführt. Für den Störfall steht eine Notfackel bereit, die überschüssiges Gas sicher verbrennt. Zur Behandlung des Gärrests ist ein Separator vorhanden, der das Digestat in eine feste und eine flüssige Phase trennt. Ein Kondensatschacht ist mit dem Fermenter F1 verbunden, und ein Sickerwasserspeicher ist mit den Fermentern F1 und F2 verbunden."
+  },
+  "regime": "underspecified",
+  "reference": {
+    "components": [
+      {
+        "id": "F1",
+        "type": "Digester",
+        "label": "Fermenter 1",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 3325,
+            "obligation": "missing_ask",
+            "formula": "pi/4*28^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 3291, "max": 3359}
+          },
+          "V_gas": {
+            "value": 870,
+            "obligation": "missing_ask",
+            "accept": {"min": 869, "max": 871},
+            "note": "zugleich max. Gasspeicher: capacity = max(50, V_gas)"
+          },
+          "T_ad": {
+            "value": 313.15,
+            "obligation": "missing_ask",
+            "accept": {"min": 312.83, "max": 313.47},
+            "rationale": "guellebasiert -> mesophil 40 C"
+          }
+        }
+      },
+      {"id": "F2", "type": "Digester", "label": "Fermenter 2", "obligation": "given", "params": {"_same_as": "F1"}},
+      {"id": "N1", "type": "Digester", "label": "Nachgärer", "obligation": "given", "params": {"_same_as": "F1"}},
+      {
+        "id": "G1",
+        "type": "Digester",
+        "label": "Gärrestlager",
+        "obligation": "given",
+        "params": {
+          "V_liq": {
+            "value": 3817,
+            "obligation": "missing_ask",
+            "formula": "pi/4*30^2*6 * 0.90 (Fuellgrad)",
+            "accept": {"min": 3778, "max": 3856}
+          },
+          "V_gas": {"value": 994, "obligation": "missing_ask", "accept": {"min": 993, "max": 995}},
+          "T_ad": {
+            "value": 293.15,
+            "obligation": "missing_ask",
+            "accept": {"min": 292.85, "max": 293.45},
+            "note": "unbeheiztes Lager ~ Umgebung; 'kein Dach' in ADM1 nicht abbildbar -> erzeugt Restgas"
+          }
+        }
+      },
+      {"id": "F1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "F2_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "N1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {"id": "G1_storage", "type": "GasStorage", "obligation": "auto", "auto_created": true},
+      {
+        "id": "sep",
+        "type": "Separator",
+        "label": "Separator",
+        "obligation": "given",
+        "params": {
+          "separator_type": {
+            "value": "screw_press",
+            "obligation": "missing_ask",
+            "note": "Skizze nennt nur 'Sep'; screw_press = Default UND in Agrar-BGA ueblich"
+          }
+        }
+      },
+      {
+        "id": "bgaa",
+        "type": "BiogasUpgrading",
+        "label": "Biogasaufbereitung",
+        "obligation": "given",
+        "params": {
+          "capacity_m3h": {"value": 500.0, "obligation": "given", "accept": {"min": 499, "max": 501}},
+          "ch4_recovery": {"value": 0.98, "obligation": "missing_ask", "accept": {"min": 0.979, "max": 0.981}},
+          "ch4_content_out": {
+            "value": 0.97,
+            "obligation": "missing_ask",
+            "accept": {"min": 0.969, "max": 0.971},
+            "note": "Netzeinspeisespezifikation gemaess DVGW G 262 / DIN EN 16723-2"
+          }
+        },
+        "note": "add_bgaa erzeugt automatisch bgaa_flare (= Notfackel der Beschreibung)"
+      },
+      {
+        "id": "bgaa_flare",
+        "type": "Flare",
+        "label": "Notfackel",
+        "obligation": "auto",
+        "auto_created": true,
+        "note": "von add_bgaa erzeugt; entspricht der im Text genannten Notfackel; empfaengt Kapazitaets-Ueberlauf der BGAA"
+      }
+    ],
+    "connections": [
+      {"from": "F1", "to": "N1", "type": "liquid", "obligation": "inferred"},
+      {"from": "F2", "to": "N1", "type": "liquid", "obligation": "inferred"},
+      {"from": "N1", "to": "G1", "type": "liquid", "obligation": "inferred"},
+      {"from": "N1", "to": "sep", "type": "liquid", "obligation": "missing_ask"},
+      {"from": "F1", "to": "F1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F2", "to": "F2_storage", "type": "gas", "obligation": "auto"},
+      {"from": "N1", "to": "N1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "G1", "to": "G1_storage", "type": "gas", "obligation": "auto"},
+      {"from": "F1_storage", "to": "bgaa", "type": "gas", "obligation": "inferred"},
+      {"from": "F2_storage", "to": "bgaa", "type": "gas", "obligation": "inferred"},
+      {"from": "N1_storage", "to": "bgaa", "type": "gas", "obligation": "inferred"},
+      {
+        "from": "G1_storage",
+        "to": "bgaa",
+        "type": "gas",
+        "obligation": "inferred",
+        "note": "Restgas des Lagers ebenfalls zur Aufbereitung"
+      },
+      {
+        "from": "bgaa",
+        "to": "bgaa_flare",
+        "type": "gas",
+        "obligation": "auto",
+        "note": "Kapazitaets-Ueberlauf oder Stoerfall -> Notfackel"
+      }
+    ]
+  },
+  "oracle": {
+    "substrate_feed": "ca. 80 t/d Maissilage über den Feststoffdosierer (auf F1 und F2 verteilt) und 20 m³/d Rindergülle aus der Vorgrube (in F1 und F2)",
+    "chp.exists": false,
+    "bgaa.exists": true,
+    "bgaa.capacity_m3h": 500.0,
+    "bgaa.ch4_recovery": 0.98,
+    "bgaa.ch4_content_out": 0.97,
+    "F1.V_gas": 870,
+    "F2.V_gas": 870,
+    "N1.V_gas": 870,
+    "G1.V_gas": 994,
+    "F1.T_ad": 313.15,
+    "F2.T_ad": 313.15,
+    "N1.T_ad": 313.15,
+    "G1.T_ad": 293.15,
+    "F1.fill_fraction": 0.9,
+    "G1.fill_fraction": 0.9,
+    "sep.source": "N1",
+    "sep.separator_type": "screw_press",
+    "digestate_cascade": "F1->N1, F2->N1, N1->G1",
+    "gas_routing": "Alle vier Behälter (F1, F2, N1, G1) speisen die Biogasaufbereitung"
+  },
+  "metadata": {"difficulty": "hard", "split": "test"}
+}

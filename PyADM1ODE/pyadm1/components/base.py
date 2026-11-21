@@ -1,0 +1,167 @@
+# ============================================================================
+# pyadm1/plant/component_base.py
+# ============================================================================
+"""
+Base classes for biogas plant components.
+"""
+
+from __future__ import annotations
+
+import copy
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Any
+
+
+class ComponentType(Enum):
+    """Enumeration of component types."""
+
+    DIGESTER = "digester"
+    CHP = "chp"
+    HEATING = "heating"
+    STORAGE = "storage"
+    SEPARATOR = "separator"
+    MIXER = "mixer"
+    BOILER = "boiler"
+    SENSOR = "sensor"
+    FLARE = "flare"
+    UPGRADING = "upgrading"
+
+
+class Component(ABC):
+    """
+    Abstract base class for all biogas plant components.
+
+    All components must implement the step() method which performs
+    one simulation time step.
+    """
+
+    def __init__(
+        self,
+        component_id: str,
+        component_type: ComponentType,
+        name: str | None = None,
+    ):
+        """
+        Initialize a component.
+
+        Parameters
+        ----------
+        component_id : str
+            Unique identifier for this component
+        component_type : ComponentType
+            Type of component
+        name : Optional[str]
+            Human-readable name (defaults to component_id)
+        """
+        self.component_id = component_id
+        self.component_type = component_type
+        self.name = name or component_id
+
+        # Connections to other components
+        self.inputs: list[str] = []  # IDs of input components
+        self.outputs: list[str] = []  # IDs of output components
+
+        # State variables
+        self.state: dict[str, Any] = {}
+
+        # Output variables (what this component provides to others)
+        self.outputs_data: dict[str, Any] = {}
+
+        # Flag to track if component has been initialized
+        self._initialized: bool = False
+
+    @abstractmethod
+    def step(self, t: float, dt: float, inputs: dict[str, Any]) -> dict[str, Any]:
+        """
+        Perform one simulation time step.
+
+        Parameters
+        ----------
+        t : float
+            Current simulation time [days]
+        dt : float
+            Time step size [days]
+        inputs : Dict[str, Any]
+            Input data from connected components
+
+        Returns
+        -------
+        Dict[str, Any]
+            Output data to be passed to connected components
+        """
+
+    @abstractmethod
+    def initialize(self, initial_state: dict[str, Any] | None = None) -> None:
+        """
+        Initialize component state.
+
+        Parameters
+        ----------
+        initial_state : Optional[Dict[str, Any]]
+            Initial state values
+        """
+
+    @abstractmethod
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Serialize component to dictionary for JSON export.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Component configuration as dictionary
+        """
+
+    @classmethod
+    @abstractmethod
+    def from_dict(cls, config: dict[str, Any]) -> Component:
+        """
+        Create component from dictionary configuration.
+
+        Parameters
+        ----------
+        config : Dict[str, Any]
+            Component configuration
+
+        Returns
+        -------
+        Component
+            Initialized component
+        """
+
+    def get_state(self) -> dict[str, Any]:
+        """Get current component state as an independent snapshot.
+
+        The copy is deep on purpose: ``state`` holds references to the live
+        containers a component integrates in place (``adm1_state`` above all),
+        so a shallow copy would keep mutating with the component and be
+        worthless as a snapshot.
+        """
+        return copy.deepcopy(self.state)
+
+    def set_state(self, state: dict[str, Any]) -> None:
+        """Restore a state previously taken with :meth:`get_state`.
+
+        ``state`` is a report of the attributes a component computes from, so
+        assigning the dict alone would leave the component running on its old
+        values -- restoring ``adm1_state`` has to reach ``self.adm1_state``,
+        not just ``self.state["adm1_state"]``. Every key that names an
+        existing writable attribute is therefore mirrored back onto it.
+        """
+        self.state = copy.deepcopy(state)
+        for key, value in self.state.items():
+            if isinstance(getattr(type(self), key, None), property):
+                continue  # computed, has no setter
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+    def add_input(self, component_id: str) -> None:
+        """Add an input connection."""
+        if component_id not in self.inputs:
+            self.inputs.append(component_id)
+
+    def add_output(self, component_id: str) -> None:
+        """Add an output connection."""
+        if component_id not in self.outputs:
+            self.outputs.append(component_id)

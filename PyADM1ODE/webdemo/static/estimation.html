@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 状态估计</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<script src="/static/plotly.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>状态估计</h1>
+      <p>UKF · pyadm1ode-estimation</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <h2>估计设置</h2>
+
+    <div class="field">
+      <label for="hours">估计窗口（小时）</label>
+      <input id="hours" type="number" min="4" max="24" step="1" value="12" />
+      <div class="hint">每小时一次预测 = 43 状态 → 87 个 sigma 点，约 2.5 秒/小时。</div>
+    </div>
+
+    <div class="field">
+      <label for="prior">进料先验（相对真值）</label>
+      <input id="prior" type="number" min="0.2" max="1.4" step="0.05" value="0.6" />
+      <div class="hint">故意设错，看滤波器能否把进料量拉回来。</div>
+    </div>
+
+    <button id="run">开始估计</button>
+    <div class="status" id="status"></div>
+
+    <p class="note">
+      <b>孪生实验。</b>真值与滤波器两个装置先预热到同一状态，滤波器只看带噪声的
+      Q_gas / Q_ch4 / pH，再用 41 状态 SR-UKF 反推全部状态。
+      <br /><br />
+      进料通道在十几小时里<b>基本拉不动</b>——消化器把进料扰动缓冲掉了，
+      产气响应有滞后，短窗口内接近不可观测。这是物理限制，不是算法失败。
+      <br /><br />
+      想验证滤波器本身是好的：把先验调到 <b>1.0</b>（模型与数据一致），进料估计会稳定在
+      真值附近；调到 <b>0.6</b> 以下就能看到它拉不回来。
+    </p>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi" id="kpi-state"><b>状态中位误差</b><strong>—</strong></div>
+      <div class="kpi" id="kpi-feed"><b>进料估计</b><strong>—</strong></div>
+      <div class="kpi" id="kpi-ph"><b>pH 追踪</b><strong>—</strong></div>
+      <div class="kpi" id="kpi-cost"><b>耗时</b><strong>—</strong></div>
+    </div>
+    <div class="status" id="sub"></div>
+    <div class="chart" id="flow"></div>
+    <div class="chart" id="ph"></div>
+  </section>
+</main>
+
+<script src="/static/estimation.js"></script>
+</body>
+</html>

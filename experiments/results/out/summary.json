@@ -1,0 +1,28 @@
+{
+  "baseline_ch4": 1057.826,
+  "n_candidates": 12,
+  "priority": [
+    "k_m_ac",
+    "k_m_pro",
+    "k_dis_PS"
+  ],
+  "n_combos": 30,
+  "n_valid": 29,
+  "valid_fraction": 0.9667,
+  "mae_top": 15.417,
+  "mae_ctrl": 40.109,
+  "mae_reduction": 0.6156,
+  "bootstrap_ci95": [
+    15.279,
+    34.015
+  ],
+  "criteria": {
+    "reduction_ge_20pct": true,
+    "ci_excludes_zero": true,
+    "valid_ge_80pct": true
+  },
+  "verdict": "筛选有效",
+  "seed": 20261117,
+  "elapsed_s": 92.5,
+  "runs": 115
+}

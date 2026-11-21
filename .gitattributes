@@ -1,0 +1,25 @@
+# Default: let git decide, but never rewrite line endings inside binary assets.
+* text=auto
+
+*.py    text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+
+# Windows launchers must keep CRLF — cmd.exe mis-parses LF batch files.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.svg   text
+*.npz   binary
+*.npy   binary
+*.pt    binary
+*.pkl   binary
+*.zip   binary

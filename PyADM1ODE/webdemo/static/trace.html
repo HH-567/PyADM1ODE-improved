@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyADM1ODE · 三通道分步</title>
+<link rel="stylesheet" href="/static/trace.css">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<div class="hud hud-tl">
+  <div class="hud-title">PyADM1ODE <span class="dim">/ 三通道分步</span></div>
+  <div class="hud-sub" id="meta-line">正在记录三条求解通道…</div>
+</div>
+
+<div class="hud hud-tr">
+  <div class="stat"><span class="k">T</span><span class="v" id="v-t">—</span><span class="u">d</span></div>
+</div>
+
+<div class="heads" id="heads"></div>
+
+<div class="note" id="note"></div>
+
+<div class="dock">
+  <button id="play" class="btn-round" title="播放 / 暂停 (空格)">❚❚</button>
+  <div class="speed" id="speed">
+    <button data-s="0.5">0.5×</button>
+    <button data-s="1" class="on">1×</button>
+    <button data-s="2">2×</button>
+    <button data-s="4">4×</button>
+  </div>
+  <input type="range" id="scrub" min="0" max="1000" value="0" step="1">
+  <div class="clock" id="clock">0.0 d</div>
+  <a class="back" href="/">← 仪表盘</a>
+</div>
+
+<div class="credit">
+  视觉参考 <a href="https://github.com/Ryder191/haloflux" target="_blank" rel="noopener">HALOFLUX</a> by Ryder191（非商业）<br>
+  三条曲线均为求解器真实步序列
+</div>
+
+<div class="loading" id="loading">
+  <div class="spin"></div>
+  <div>正在用三种积分器各跑一遍…</div>
+</div>
+
+<script src="/static/trace.js"></script>
+</body>
+</html>

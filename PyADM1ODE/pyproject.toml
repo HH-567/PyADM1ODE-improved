@@ -1,0 +1,248 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyadm1"
+version = "0.6.2"
+description = "Python implementation of Anaerobic Digestion Model No. 1 (ADM1)"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Daniel Gaida", email = "daniel.gaida@th-koeln.de"}
+]
+maintainers = [
+    {name = "Daniel Gaida", email = "daniel.gaida@th-koeln.de"}
+]
+keywords = [
+    "ADM1",
+    "anaerobic digestion",
+    "biogas",
+    "biochemical model",
+    "simulation"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "matplotlib",
+    "networkx",
+    "PyYAML>=6.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "pytest-asyncio>=0.21.0",
+    "psycopg2-binary>=2.9.0",
+    "black>=23.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+    "isort>=5.0",
+]
+docs = [
+    "sphinx>=5.0",
+    "sphinx-rtd-theme>=1.0",
+    "sphinx-autodoc-typehints>=1.0",
+]
+# Differentiable ADM1 backend (pyadm1.core.adm1_torch).
+torch = [
+    "torch>=2.0",
+]
+# LMM benchmark (benchmark/eval). The matcher and validator are stdlib-only;
+# these are needed to call an LLM and to read PDF data points.
+benchmark = [
+    "groq",
+    "pypdf",
+]
+all = [
+    "pyadm1[dev,docs,torch,benchmark]",
+]
+
+[project.urls]
+Homepage = "https://github.com/dgaida/PyADM1ODE"
+Repository = "https://github.com/dgaida/PyADM1ODE"
+Documentation = "https://github.com/dgaida/PyADM1ODE#readme"
+"Bug Tracker" = "https://github.com/dgaida/PyADM1ODE/issues"
+
+[project.scripts]
+pyadm1-simulate = "pyadm1.cli:main"
+
+[tool.setuptools]
+# Ship the library and the bundled data only. Without the include filter,
+# find's default `namespaces = true` turned every directory into a package:
+# the wheel carried benchmark/, output/, scripts/, site/ and tests/ as well
+# (197 files, 56 of them CSVs from output/).
+packages = {find = {include = ["pyadm1*", "data*"]}}
+
+[tool.setuptools.package-data]
+pyadm1 = ["dlls/*.dll", "py.typed"]
+# The substrate library is YAML; listing only xml/csv silently shipped a wheel
+# whose SubstrateRegistry found zero substrates. data/ stays a top-level
+# package because SubstrateRegistry resolves it relative to pyadm1's parent.
+# (a wildcard key is not allowed here; "*" applies to every package, which
+# after the include filter above means pyadm1 and data only)
+"*" = ["*.yaml", "*.yml", "*.toml", "*.xml", "*.csv", "*.md"]
+
+[tool.black]
+line-length = 127
+target-version = ["py38", "py39", "py310", "py311"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | dlls
+)/
+'''
+
+[tool.ruff]
+line-length = 127
+target-version = "py38"
+
+[tool.ruff.lint]
+# Curated strict rule set: modernization, safety and simplification. The noisy
+# docstring (D), annotation (ANN) and naming (N8xx) groups are intentionally
+# left out because they do not fit a scientific codebase (e.g. ``S_su``,
+# ``X_ch`` variable names follow the ADM1 nomenclature).
+select = [
+    "E", "F", "W",  # pycodestyle + pyflakes
+    "I",            # isort
+    "UP",           # pyupgrade
+    "FA",           # flake8-future-annotations
+    "SIM",          # flake8-simplify
+    "BLE",          # flake8-blind-except
+    "S",            # flake8-bandit (security)
+    "PIE",          # flake8-pie
+    "EXE",          # flake8-executable
+    "ISC",          # flake8-implicit-str-concat
+    "PLW",          # pylint warnings
+    "RUF",          # ruff-specific rules
+    "N999",         # invalid-module-name
+]
+ignore = [
+    "E501",         # line length is enforced by black (line-length = 127)
+    "S101",         # asserts are expected in tests and the benchmark harness
+    "ISC001",       # single-line implicit concat conflicts with the formatter
+    "RUF001",       # ambiguous unicode in German docstrings/strings
+    "RUF002",       # ambiguous unicode in German docstrings
+    "RUF003",       # ambiguous unicode in German comments
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pyadm1"]
+
+[tool.ruff.lint.per-file-ignores]
+# Example scripts need sys.path.insert before importing pyadm1, which puts
+# third-party imports after a statement. That's intentional for standalone runs.
+# The numeric ``NN_name`` filenames are deliberate tutorial ordering (N999).
+"examples/*.py" = ["E402", "N999"]
+# Benchmark notebooks add benchmark/eval to sys.path before importing its
+# modules; that path setup must precede the imports.
+"benchmark/*.ipynb" = ["E402"]
+# Torch tests import the backend only after pytest.importorskip("torch"), so the
+# module imports intentionally follow that guard.
+"tests/unit/test_core/test_adm1_torch.py" = ["E402"]
+
+[tool.isort]
+profile = "black"
+line_length = 127
+skip_gitignore = true
+known_first_party = ["pyadm1"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "biogas.*",
+    "clr",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--cov=pyadm1",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+
+[tool.coverage.run]
+source = ["pyadm1"]
+omit = [
+    "*/tests/*",
+    "*/dlls/*",
+]
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-init-module = false
+ignore-magic = false
+ignore-semiprivate = false
+ignore-private = false
+ignore-property-decorators = false
+ignore-module = false
+ignore-nested-functions = false
+ignore-nested-classes = false
+ignore-setters = false
+fail-under = 95
+exclude = ["setup.py", "docs", "build", "dist", "tests", "pyadm1/dlls"]
+ignore-regex = ["^get$", "^mock_.*", ".*BaseClass.*"]
+verbose = 2
+quiet = false
+whitelist-regex = []
+color = true
+generate-badge = "docs/assets"
+badge-format = "svg"
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

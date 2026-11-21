@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 参数标定</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<script src="/static/plotly.min.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>参数标定</h1>
+      <p>CALIBRATION · pyadm1ode-calibration</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <h2>标定设置</h2>
+
+    <div class="field">
+      <label for="param">要标定的参数</label>
+      <select id="param"></select>
+      <div class="hint" id="param-hint"></div>
+    </div>
+
+    <div class="field">
+      <label for="truth">真值（生成"实测数据"用）</label>
+      <input id="truth" type="number" step="0.1" />
+      <div class="hint">合成数据：用这个值跑一遍当作实测，真值已知才能看误差。</div>
+    </div>
+
+    <div class="field">
+      <label for="start">初始猜测</label>
+      <input id="start" type="number" step="0.1" />
+    </div>
+
+    <div class="field">
+      <label for="days">数据天数</label>
+      <input id="days" type="number" min="5" max="90" step="1" value="30" />
+    </div>
+
+    <div class="field">
+      <label for="method">优化算法</label>
+      <select id="method">
+        <option value="nelder_mead">Nelder-Mead（快，局部）</option>
+        <option value="differential_evolution">差分进化（慢，全局）</option>
+        <option value="l-bfgs-b">L-BFGS-B（需要梯度）</option>
+      </select>
+    </div>
+
+    <button id="run">开始标定</button>
+    <div class="status" id="status"></div>
+
+    <p class="note">
+      <b>数据是合成的。</b>这一步演示的是标定方法本身：给定真值，看算法能否从错误的初始猜测把它反推回来。
+      <br /><br />
+      只有 <b>能写进 ADM1._kinetic</b> 的参数才列出来——包里自带的 <code>k_dis</code> 和
+      <code>k_dec_X_*</code> 在 pyadm1 0.6.2 里不存在，写了也不生效。
+    </p>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi" id="kpi-truth"><b>真值</b><strong>—</strong></div>
+      <div class="kpi" id="kpi-cal"><b>校准结果</b><strong>—</strong></div>
+      <div class="kpi" id="kpi-err"><b>相对误差</b><strong>—</strong></div>
+      <div class="kpi" id="kpi-rmse"><b>RMSE 改善</b><strong>—</strong></div>
+    </div>
+    <div class="status" id="sub"></div>
+    <div class="chart" id="fit"></div>
+    <div class="chart" id="cmp"></div>
+  </section>
+</main>
+
+<script src="/static/calibration.js"></script>
+</body>
+</html>

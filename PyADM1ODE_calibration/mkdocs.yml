@@ -1,0 +1,145 @@
+site_name: PyADM1ODE Calibration
+site_description: Parameter calibration framework for PyADM1ODE biogas plant models
+site_author: Daniel Gaida
+repo_url: https://github.com/dgaida/PyADM1ODE_calibration
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: de
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tooltips
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true
+      languages:
+        - locale: de
+          name: Deutsch
+          default: true
+          build: true
+        - locale: en
+          name: English
+          build: true
+          nav_translations:
+            Erste Schritte: Getting Started
+            Konfiguration: Configuration
+            Tutorials: Tutorials
+            Überblick: Overview
+            Kalibrierungs-Tutorial: Calibration Tutorial
+            Beispiele: Examples
+            Übersicht: Overview
+            Kalibrierungs-Workflow: Calibration Workflow
+            Nutzung: Usage
+            Kalibrierung: Calibration
+            API-Referenz: API Reference
+            Optimierung: Optimization
+            Architektur: Architecture
+            Entwicklung: Development
+            Docstring-Guide: Docstring Guide
+            Metriken: Metrics
+            Versionierung: Versioning
+            Fehlerbehebung: Troubleshooting
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_category_heading: true
+            merge_init_into_class: true
+  - mermaid2:
+      arguments:
+        theme: default
+  - mike:
+      alias_type: symlink
+      canonical_version: latest
+
+extra:
+  version:
+    provider: mike
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Erste Schritte: getting-started.md
+  - Installation: installation.md
+  - Konfiguration: configuration.md
+  - Tutorials:
+      - Überblick: tutorials/index.md
+      - Kalibrierungs-Tutorial: tutorials/calibration.md
+  - Beispiele:
+      - Übersicht: examples/index.md
+      - Kalibrierungs-Workflow: examples/calibration_workflow.md
+  - Nutzung:
+      - Übersicht: usage/index.md
+      - Kalibrierung: usage/calibration.md
+  - API-Referenz:
+      - Übersicht: api/index.md
+      - Kalibrierung: api/calibration.md
+      - IO: api/io.md
+      - Optimierung: api/optimization.md
+  - Architektur: architecture/index.md
+  - Entwicklung:
+      - Übersicht: development/index.md
+      - Docstring-Guide: development/docstring-guide.md
+      - Metriken: development/metrics.md
+      - Versionierung: development/versioning.md
+      - Changelog: development/changelog.md
+  - Fehlerbehebung: troubleshooting.md
+
+# Suppress autorefs warnings about multiple primary URLs which occur in multi-language builds
+# This requires mkdocs >= 1.5
+# Validation settings

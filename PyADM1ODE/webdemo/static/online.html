@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 在线更正</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<script src="/static/plotly.min.js"></script>
+<style>
+  /* 本页有五块内容（KPI + 四张图），lab.css 的 .stage 是按四行设计的 */
+  .stage { grid-template-rows: auto repeat(4, minmax(0, 1fr)); }
+  /* 容器高度为 0 时 Plotly 会把画布定死在很小的高度，这里给个下限 */
+  .chart { min-height: 190px; }
+  .btns { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .btn {
+    width: 100%; cursor: pointer;
+    font-family: var(--mono); font-size: 12px;
+    color: #eaf3fc; background: #123033;
+    border: 1px solid rgba(111, 227, 212, .45); border-radius: 7px;
+    padding: 8px 10px;
+  }
+  .btn:hover:not(:disabled) { background: #17403f; border-color: #6fe3d4; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn.ghost { background: #0b0e13; border-color: var(--line2); color: var(--muted); }
+  .btn.ghost:hover:not(:disabled) { color: #eaf3fc; border-color: var(--accent); }
+  /* 自动连播进行中：按钮反色，一眼看出正在跑 */
+  .btn.on {
+    background: #6fe3d4; border-color: #6fe3d4; color: #061018; font-weight: 600;
+  }
+  .btn.on:hover:not(:disabled) { background: #8bf0e3; border-color: #8bf0e3; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>在线更正</h1>
+      <p>ONLINE · 逐条状态更正 + 窗口参数更正</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <h2>会话设置</h2>
+
+    <div class="field">
+      <label for="dt">量测间隔 dt <span class="unit">h</span></label>
+      <input id="dt" type="number" step="0.5" min="0.25" max="6" value="1" />
+    </div>
+
+    <div class="field">
+      <label for="prior">进料先验错误</label>
+      <input id="prior" type="number" step="0.1" min="0.2" max="1.4" value="0.6" />
+      <div class="hint">0.6 = 先验只有真值的 60%，用来制造一个可被更正的偏差。</div>
+    </div>
+
+    <div class="field">
+      <label for="noise">量测噪声 σ</label>
+      <input id="noise" type="number" step="0.005" min="0" max="0.2" value="0.02" />
+    </div>
+
+    <div class="field">
+      <label for="every">每 N 条量测查一次重标定</label>
+      <input id="every" type="number" step="1" min="0" max="48" value="6" />
+      <div class="hint">0 = 只做状态更正，不做参数更正。</div>
+    </div>
+
+    <div class="btns">
+      <button id="start" class="btn">启动会话</button>
+      <button id="auto" class="btn" disabled>自动运行</button>
+      <button id="step1" class="btn ghost" disabled>推进 1 小时</button>
+      <button id="step6" class="btn ghost" disabled>推进 6 小时</button>
+      <button id="drift" class="btn ghost" disabled>制造参数漂移 ×1.3</button>
+      <button id="stop" class="btn ghost" disabled>结束会话</button>
+    </div>
+
+    <div class="status" id="status">点「启动会话」开始。首次要建两个装置并预热 30 天，约 10 秒。</div>
+
+    <div class="note" style="margin-top:14px">
+      <b>状态更正</b>：每条量测都 <code>predict</code> + <code>update</code>，单条约 6 秒。<br />
+      <b>参数更正</b>：到检查点先跑触发判据（几十毫秒），只有残差超限才重标定，
+      且单次改动不超过 20%。<br />
+      <b>漂移按钮</b>：把真值装置的参数拉大，滤波器还拿旧值——用来观察判据会不会发现。
+      注意消化器有缓冲，参数漂移在十几小时内几乎看不出来（实测 3 倍漂移只带来 0.2% 偏置）。
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi"><b>仿真时间</b><strong id="k-time">—</strong></div>
+      <div class="kpi"><b>状态中位误差</b><strong id="k-err">—</strong></div>
+      <div class="kpi"><b>NIS</b><strong id="k-nis">—</strong></div>
+      <div class="kpi"><b>进料估计 / 真值</b><strong id="k-feed">—</strong></div>
+      <div class="kpi"><b id="k-param-name">k_hyd_ch</b><strong id="k-param">—</strong></div>
+      <div class="kpi"><b>单步耗时</b><strong id="k-cost">—</strong></div>
+    </div>
+
+    <div class="chart" id="chart-err"></div>
+    <div class="chart" id="chart-nis"></div>
+    <div class="chart" id="chart-feed"></div>
+    <div class="chart" id="events" style="overflow:auto; padding:10px 14px"></div>
+  </section>
+</main>
+
+<script src="/static/online.js"></script>
+</body>
+</html>

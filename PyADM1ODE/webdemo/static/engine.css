@@ -1,0 +1,190 @@
+/* PyADM1ODE · 求解引擎 — 样式
+ * 单色白光 + 细线 + 全大写宽字距。构图语言参考科幻控制台，
+ * 代码为本项目原创实现。
+ */
+:root {
+  --bg: #08090b;
+  --panel: #0e0f12;
+  --line: #25282e;
+  --line2: #3a3e46;
+  --text: #cfd2d8;
+  --dim: #6b6f78;
+  --faint: #3f434a;
+  --white: #f4f5f7;
+  --pink: #f0a6c6;
+  --teal: #98e0cf;
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font-family: var(--mono);
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100vh;
+}
+
+/* ---------------- header ---------------- */
+header {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.7fr) repeat(5, minmax(0, 1fr));
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 18px 0;
+  background: #0a0b0d;
+}
+.brand h1 {
+  margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 1.6px;
+  color: var(--white); white-space: nowrap;
+}
+.brand p {
+  margin: 3px 0 9px; font-size: 8.5px; color: var(--dim);
+  letter-spacing: 1.2px; white-space: nowrap; overflow: hidden;
+}
+.kpi { padding: 0 10px 9px; position: relative; }
+.kpi .k { display: block; font-size: 8.5px; color: var(--dim); letter-spacing: 1.2px; }
+.kpi .v {
+  font-size: 14px; font-weight: 800; color: var(--white);
+  font-variant-numeric: tabular-nums;
+}
+.kpi .v.pink { color: var(--pink); }
+.kpi i {
+  position: absolute; left: 10px; right: 0; bottom: -1px; height: 2px;
+  background: var(--line);
+}
+.kpi i::after {
+  content: ""; display: block; height: 100%; width: var(--w, 0%);
+  background: var(--text); transition: width .6s ease;
+}
+
+/* ---------------- stage ---------------- */
+.stage { position: relative; min-height: 0; overflow: hidden; }
+#stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+#stage.grabbing { cursor: grabbing; }
+
+.stage::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at 42% 50%, transparent 52%, rgba(0,0,0,.62) 100%);
+}
+
+.callout {
+  position: absolute; z-index: 2; pointer-events: none;
+  background: rgba(8,9,11,.86);
+  border: 1px solid var(--line2);
+  padding: 5px 8px;
+  font-size: 9px; letter-spacing: 1px;
+  transition: opacity .4s;
+  will-change: transform;
+}
+.callout b { display: block; font-size: 8px; color: var(--dim); margin-bottom: 3px; font-weight: 600; }
+.callout span { font-size: 12px; color: var(--white); font-weight: 600; white-space: nowrap; }
+
+.status {
+  position: absolute; right: 16px; bottom: 12px; z-index: 2;
+  text-align: right; pointer-events: none;
+}.status .big { font-size: 11px; color: var(--white); font-weight: 800; letter-spacing: .8px; }
+.status .sm { color: var(--dim); font-size: 8px; margin-top: 2px; }
+
+/* event marker: a real simulation event (e.g. the temperature step) */
+.event {
+  position: absolute; left: 50%; top: 18px; transform: translateX(-50%) translateY(-6px);
+  z-index: 3; pointer-events: none;
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 217, 138, .38);
+  border-left: 2px solid rgba(255, 217, 138, .9);
+  background: rgba(20, 15, 6, .78);
+  font-family: var(--mono);
+  opacity: 0; transition: opacity .35s, transform .35s;
+}
+.event.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.event b {
+  font-size: 8.5px; font-weight: 600; letter-spacing: 1.6px;
+  color: rgba(255, 217, 138, .75); text-transform: uppercase;
+}
+.event span { font-size: 12px; color: #ffe3a8; font-weight: 600; }
+
+/* one-time hint when the camera hands over to the user */
+.hint {
+  position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%) translateY(6px);
+  z-index: 3; pointer-events: none;
+  padding: 6px 14px;
+  border: 1px solid var(--line2);
+  background: rgba(8, 9, 11, .82);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 1.4px;
+  color: rgba(210, 228, 245, .8); text-transform: uppercase;
+  opacity: 0; transition: opacity .4s, transform .4s;
+}
+.hint.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* time scrubber: drag to seek, button to play/pause */
+.scrub {
+  position: absolute; left: 16px; right: 16px; bottom: 44px; z-index: 3;
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: rgba(8, 10, 14, .78);
+  backdrop-filter: blur(4px);
+  font-family: var(--mono);
+}
+.scrub button {
+  flex: 0 0 auto;
+  width: 26px; height: 22px;
+  display: grid; place-items: center;
+  font-size: 9px; line-height: 1;
+  color: var(--text); background: rgba(255, 255, 255, .06);
+  border: 1px solid var(--line2); border-radius: 5px; cursor: pointer;
+}
+.scrub button:hover { border-color: var(--accent); color: var(--accent); }
+.scrub input[type="range"] {
+  flex: 1 1 auto; height: 3px; margin: 0;
+  -webkit-appearance: none; appearance: none;
+  background: linear-gradient(90deg, rgba(52, 211, 200, .55), rgba(124, 184, 255, .25));
+  border-radius: 2px; outline: none; cursor: pointer;
+}
+.scrub input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--accent); border: 1px solid #04100f;
+  box-shadow: 0 0 6px rgba(52, 211, 200, .7);
+}
+.scrub input[type="range"]::-moz-range-thumb {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--accent); border: 1px solid #04100f;
+}
+.scrub-time {
+  flex: 0 0 auto; min-width: 92px; text-align: right;
+  font-size: 10px; letter-spacing: .6px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- bottom panels ---------------- */
+.panels {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px; padding: 8px 12px 12px;
+  border-top: 1px solid var(--line); background: #0a0b0d;
+}
+.panel {
+  border: 1px solid var(--line); background: var(--panel);
+  padding: 7px 10px 8px; height: clamp(110px, 16vh, 150px);
+  display: flex; flex-direction: column; min-width: 0;
+}
+.panel h3 {
+  margin: 0 0 5px; font-size: 9px; font-weight: 800;
+  letter-spacing: 1.2px; color: var(--white); white-space: nowrap;
+}
+.panel canvas { width: 100%; flex: 1; min-height: 0; display: block; }
+
+@media (max-width: 1000px) {
+  header { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 0; }
+  .brand { grid-column: 1 / -1; }
+  .panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

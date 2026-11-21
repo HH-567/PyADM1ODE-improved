@@ -1,0 +1,83 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Pytest
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Data
+data/*.csv
+data/*.json
+
+# MkDocs built site
+site/
+private_docs/
+output/
+
+reports/
+old/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Dataset artefacts that are large and recreatable. The dataset itself
+# (train.npz / test.npz / meta.json / the small JSON search traces) IS tracked,
+# because the tuning cannot run without it. See PyADM1ODE_estimate_local/README.md
+# for where the excluded files live.
+_backup_*/
+gen_parts/
+ukf_parts/
+filter_tuning_results/*.npz
+
+# Experiment outputs and run logs
+experiments/**/results/
+
+# LaTeX build artefacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.toc
+*.log
+
+# Experiment and test results: report them in the docs, do not commit them
+results_*/
+datasets/**/ukf_*reference.npz
+datasets/**/pinn_trajectories.npz
+# Shifted test sets of the generalisation studies: local only
+datasets/benchmark_ccm/
+datasets/benchmark_hard/

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyADM1ODE · 求解引擎</title>
+<link rel="stylesheet" href="/static/engine.css">
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="brand">
+      <h1>PyADM1ODE / ADM1da</h1>
+      <p>41-STATE ANAEROBIC DIGESTION · EVERY BEAT IS A REAL SOLVER STEP</p>
+    </div>
+    <div class="kpi"><span class="k">SIM TIME [D]</span><span class="v" id="k0">—</span><i></i></div>
+    <div class="kpi"><span class="k">STEPS</span><span class="v pink" id="k1">—</span><i></i></div>
+    <div class="kpi"><span class="k">BIOGAS [M³/D]</span><span class="v" id="k2">—</span><i></i></div>
+    <div class="kpi"><span class="k">pH</span><span class="v" id="k3">—</span><i></i></div>
+    <div class="kpi"><span class="k">CH₄ [%]</span><span class="v" id="k4">—</span><i></i></div>
+  </header>
+
+  <main class="stage" id="stageWrap">
+    <canvas id="stage"></canvas>
+    <div class="callout" id="callout">
+      <b id="coK">质量守恒</b><span id="coV">Σ 进料 = 出料 + 产气</span>
+    </div>
+    <div class="event" id="event">
+      <b id="evK">温度阶跃</b><span id="evV">−5 °C</span>
+    </div>
+    <div class="hint" id="hint">视角已交给你 · 滚轮缩放 · 拖拽平移 · 双击复位</div>
+    <div class="scrub" id="scrub">
+      <button id="playBtn" type="button" title="播放 / 暂停（空格）" aria-label="播放或暂停">❚❚</button>
+      <input id="timeSlider" type="range" min="0" max="100" step="1" value="0"
+             aria-label="仿真时间" />
+      <span class="scrub-time" id="timeLabel">—</span>
+    </div>
+    <div class="status">
+      <div class="big" id="stBig">— / — STEPS</div>
+      <div class="sm" id="stSm">scipy BDF · 每一下跳动 = 一个被接受的求解步</div>
+    </div>
+  </main>
+
+  <section class="panels">
+    <div class="panel"><h3>41 状态量 / STATE VECTOR</h3><canvas id="pStates"></canvas></div>
+    <div class="panel"><h3>右端项 |dy/dt| 排序</h3><canvas id="pRates"></canvas></div>
+    <div class="panel"><h3>产气 / 甲烷占比</h3><canvas id="pGas"></canvas></div>
+    <div class="panel"><h3>步长 h（对数）</h3><canvas id="pStep"></canvas></div>
+  </section>
+
+</div>
+<script src="/static/engine.js"></script>
+</body>
+</html>
