@@ -28,7 +28,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ./PyADM1ODE
           python -m pip install --no-deps -e ./PyADM1ODE_calibration -e ./PyADM1ODE_estimate
-          python -m pip install pytest pytest-asyncio
+          # pytest-cov is required: pyproject.toml puts --cov=pyadm1 in addopts.
+          python -m pip install pytest pytest-asyncio pytest-cov
 
       - name: Run the core test suite
         working-directory: PyADM1ODE
