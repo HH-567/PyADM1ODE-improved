@@ -1,0 +1,50 @@
+name: Auto Versioning
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate Changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          outputPath: CHANGELOG.md
+
+      - name: Sync Changelogs
+        run: |
+          for lang in en de; do
+            if [ -d "docs/$lang" ]; then
+              cp CHANGELOG.md "docs/$lang/CHANGELOG.md"
+            fi
+          done
+
+      - name: Stage changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add CHANGELOG.md docs/en/CHANGELOG.md docs/de/CHANGELOG.md
+
+      - name: Auto Version and Badges
+        uses: dgaida/auto-version-action@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-version: true
+          create-badge: true

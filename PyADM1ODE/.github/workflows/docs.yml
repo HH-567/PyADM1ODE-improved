@@ -1,0 +1,106 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+# Serialise docs deployments so two pushes to master in quick succession
+# don't both try to update gh-pages and race each other.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,docs]"
+          pip install mkdocs-material mkdocs-static-i18n "mkdocstrings[python]" mkdocs-mermaid2-plugin mike mkdocs-autorefs interrogate git-cliff
+
+      - name: Install Mono (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-complete
+          mono --version
+
+      - name: Check API Doc Coverage
+        run: |
+          interrogate pyadm1
+      - name: Fix Markdown List Line Endings
+        run: |
+          python pyadm1/utils/fix_markdown_lists.py docs
+      - name: Generate Skill.md for LLMs
+        run: |
+          export PYTHONPATH=$PYTHONPATH:.
+          python pyadm1/utils/generate_skill_md.py
+
+      - name: Generate Changelog
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          git-cliff --output CHANGELOG.md
+          for lang in en de; do
+            if [ -d "docs/$lang" ]; then
+              cp CHANGELOG.md "docs/$lang/CHANGELOG.md"
+            fi
+          done
+
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Deploy Versioned Documentation
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+
+          # Retry wrapper: `mike` pushes to gh-pages, which can race with other
+          # workflows that also touch gh-pages.  If the push is rejected
+          # (remote ahead), fetch the latest gh-pages, rebase mike's local
+          # commit on top, and try again — up to 5 attempts.
+          retry_mike () {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              echo "mike attempt $attempt failed; refreshing gh-pages and retrying ..."
+              git fetch origin gh-pages || true
+              sleep $((5 * attempt))
+            done
+            return 1
+          }
+
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+            retry_mike mike deploy --push --update-aliases "$VERSION" latest
+          elif [[ $GITHUB_REF == refs/heads/master ]]; then
+            retry_mike mike deploy --push --update-aliases dev latest
+          fi
+          retry_mike mike set-default latest --push
+
+      - name: Build Documentation (PR check)
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdocs build

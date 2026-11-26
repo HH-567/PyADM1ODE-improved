@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 加料推荐</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<script src="/static/plotly.min.js"></script>
+<style>
+  .stage { grid-template-rows: auto auto minmax(0, 1fr); }
+  .chart { min-height: 200px; }
+  .feed-row { display: grid; grid-template-columns: 1fr 84px; gap: 6px; margin-bottom: 6px; align-items: center; }
+  .btn { width: 100%; cursor: pointer; font-family: var(--mono); font-size: 12px; color: #eaf3fc;
+    background: #123033; border: 1px solid rgba(111,227,212,.45); border-radius: 7px; padding: 9px 10px; }
+  .btn:hover:not(:disabled) { background: #17403f; border-color: #6fe3d4; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .banner { border-radius: 10px; padding: 9px 12px; font-family: var(--mono); font-size: 11.5px;
+    border: 1px solid rgba(111,227,212,.35); background: rgba(18,48,51,.55); color: #cfeae6; }
+  .banner.warn { border-color: rgba(255,180,90,.4); background: rgba(60,42,18,.55); color: #ffd9a0; }
+  table.rec { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+  table.rec th, table.rec td { padding: 5px 8px; border-bottom: 1px solid rgba(190,215,240,.07); text-align: left; }
+  table.rec th { color: var(--muted); font-weight: 500; }
+  .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>加料推荐</h1>
+      <p>OPTIMISE · 在稳定窗口内把甲烷产率推到最大</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<div class="merged-notice" style="margin:12px 20px 0; padding:10px 14px; border-radius:10px;
+  border:1px solid rgba(255,180,90,.45); background:rgba(60,42,18,.55); color:#ffd9a0;
+  font-family:var(--mono, monospace); font-size:12px">
+  <b>本页功能已并入「按天推进」</b> —— <a href="/daily" style="color:#6fe3d4">按天推进里的「推荐加料」区块现在包含同样的约束输入，并且能锁定供货固定的原料。</a>
+</div>
+<main class="layout">
+  <aside class="panel">
+    <h2>当前配比 <span class="unit">m³/d</span></h2>
+    <div id="feeds"></div>
+
+    <div class="field"><label for="days">单次评估跑几天</label><input id="days" type="number" value="30" min="10" max="90" /></div>
+
+    <h2 style="margin-top:12px">稳定窗口（经验值，可改）</h2>
+    <div class="field"><label for="phlo">pH 下限</label><input id="phlo" type="number" value="6.8" step="0.1" /></div>
+    <div class="field"><label for="vfa">VFA/TAC 上限</label><input id="vfa" type="number" value="0.4" step="0.05" /></div>
+    <div class="field"><label for="olr">OLR 上限 <span class="unit">kg VS/(m³·d)</span></label><input id="olr" type="number" value="5.0" step="0.5" /></div>
+    <div class="field"><label for="hrt">HRT 下限 <span class="unit">d</span></label><input id="hrt" type="number" value="20" step="1" /></div>
+
+    <button id="run" class="btn">计算推荐配料</button>
+    <div class="status" id="status">会给出一组"多产气但仍稳定"的配料，并指出卡住的是哪条约束。</div>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi"><b>当前甲烷</b><strong id="k-cur">—</strong></div>
+      <div class="kpi"><b>推荐甲烷</b><strong id="k-new">—</strong></div>
+      <div class="kpi"><b>提升</b><strong id="k-gain">—</strong></div>
+      <div class="kpi"><b>推荐总量</b><strong id="k-total">—</strong></div>
+      <div class="kpi"><b>推荐 OLR</b><strong id="k-olr">—</strong></div>
+      <div class="kpi"><b>耗时</b><strong id="k-time">—</strong></div>
+    </div>
+
+    <div class="banner" id="binding">还没有计算。点左侧「计算推荐配料」。</div>
+
+    <div class="chart" style="padding: 8px 12px; overflow: auto">
+      <table class="rec" id="table"></table>
+    </div>
+  </section>
+</main>
+
+<script src="/static/optimize.js"></script>
+</body>
+</html>

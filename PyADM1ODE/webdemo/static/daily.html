@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 按天推进</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<script src="/static/plotly.min.js"></script>
+<script src="/static/chart-theme.js"></script>
+<style>
+  /* 不再用网格分配高度：Plotly 会把画布高度写回元素，网格行随之被撑变形。
+     改成固定高度的纵向堆叠，行高可预测。 */
+  section.stage { display: block; overflow: auto; height: 100%; }
+  .chart { height: 150px; margin-bottom: 10px; }
+  .kpis, .banner, .recpanel { margin-bottom: 10px; }
+  .feed-row { display: grid; grid-template-columns: 18px 1fr 78px 24px; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .feed-row select, .feed-row input[type="number"] { width: 100%; }
+  .feed-row input[type="checkbox"] { width: auto; margin: 0; }
+  .btn-mini { font-family: var(--mono); font-size: 12px; padding: 4px; cursor: pointer;
+    background: #0b0e13; color: var(--muted); border: 1px solid var(--line2); border-radius: 6px;
+    width: auto; display: inline-block; margin-right: 4px; }
+  .btn-mini:hover { color: #eaf3fc; border-color: var(--accent); }
+  .btns { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .btn { width: 100%; cursor: pointer; font-family: var(--mono); font-size: 12px; color: #eaf3fc;
+    background: #123033; border: 1px solid rgba(111,227,212,.45); border-radius: 7px; padding: 9px 10px; }
+  .btn:hover:not(:disabled) { background: #17403f; border-color: #6fe3d4; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn.ghost { background: #0b0e13; border-color: var(--line2); color: var(--muted); }
+  .btn.on { background: #6fe3d4; border-color: #6fe3d4; color: #061018; font-weight: 600; }
+  .kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .panel h2 { margin-top: 14px; }
+  .banner { border-radius: 10px; padding: 8px 12px; font-family: var(--mono); font-size: 11.5px;
+    border: 1px solid rgba(111,227,212,.35); background: rgba(18,48,51,.55); color: #cfeae6; }
+  .banner.warn { border-color: rgba(255,180,90,.45); background: rgba(60,42,18,.55); color: #ffd9a0; }
+  .banner.serious { border-color: rgba(255,120,120,.55); background: rgba(64,20,20,.6); color: #ffb4b4; }
+  .recpanel { border-radius: 10px; padding: 8px 12px; font-family: var(--mono); font-size: 11.5px;
+    border: 1px solid rgba(150,180,230,.22); background: rgba(12,20,32,.75); color: #cfe0f0;
+    overflow: auto; align-self: start; max-height: 170px; }
+  .recpanel table { border-collapse: collapse; width: 100%; }
+  .recpanel th, .recpanel td { padding: 3px 8px 3px 0; text-align: left; white-space: nowrap; }
+  .recpanel th { color: #7f8fa6; font-weight: 500; }
+  .recpanel .up { color: #6fe3d4; }
+  .recpanel .down { color: #ffb45a; }
+  .recpanel .head { color: #9fb2c8; margin-bottom: 4px; }
+  .cmp-row { display: grid; grid-template-columns: 14px 9px auto 1fr; gap: 6px; align-items: baseline;
+    font-family: var(--mono); font-size: 11.5px; margin-bottom: 5px; }
+  .cmp-row input[type="checkbox"] { width: auto; margin: 0; }
+  .cmp-row .dotc { width: 9px; height: 9px; border-radius: 50%; display: inline-block; transform: translateY(-1px); }
+  .cmp-name { white-space: nowrap; }
+  .cmp-detail { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .modal { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
+    background: rgba(2,5,9,.72); backdrop-filter: blur(3px); }
+  .modal[hidden] { display: none; }
+  .modal-box { width: 460px; max-height: 88vh; overflow: auto; padding: 16px 18px; border-radius: 12px;
+    background: #0d1218; border: 1px solid rgba(190,215,240,.18);
+    font-family: var(--mono); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .modal-box h3 { margin: 0 0 8px; font-size: 14px; color: #eaf3fc; font-weight: 600; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>按天推进</h1>
+      <p>DAILY · 每天选加什么料，也可以交给推荐配料</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <h2>工作区</h2>
+    <div class="field">
+      <label for="ws-select">当前工作区</label>
+      <select id="ws-select"></select>
+      <div class="hint" id="ws-hint">每个工作区记住自己的装置状态与曲线；启动会话时若还没有，会自动建一个。</div>
+    </div>
+    <div style="display:flex; gap:6px; margin-bottom:10px">
+      <button id="ws-new" class="btn-mini" style="flex:1">＋ 新建工作区</button>
+      <button id="ws-manage" class="btn-mini" style="flex:1">管理 / 删除</button>
+    </div>
+
+    <h2>反应器</h2>
+    <div class="field"><label for="vliq">罐容 V<sub>liq</sub> <span class="unit">m³</span></label><input id="vliq" type="number" value="1050" step="50" /></div>
+    <div class="field"><label for="tad">温度 <span class="unit">°C</span></label><input id="tad" type="number" value="42" step="0.5" /></div>
+
+    <h2>今日加料 <span class="unit">m³/d</span></h2>
+    <div class="hint" style="margin-bottom:6px">左侧勾选 = <b>工厂可调</b>；不勾的原料按合同量锁定，推荐不会改动它。</div>
+    <div id="feeds"></div>
+    <div style="display:flex; gap:6px; margin-bottom:8px">
+      <button id="add-row" class="btn-mini" style="flex:1">＋ 再加一种料</button>
+      <button id="edit-sub" class="btn-mini" style="flex:1">✎ 编辑底物</button>
+    </div>
+
+    <div class="btns">
+      <button id="start" class="btn">启动会话</button>
+      <button id="advance" class="btn" disabled>加这些料，推进一天</button>
+      <button id="auto7" class="btn ghost" disabled>用当前配比连跑 7 天</button>
+    </div>
+
+    <div class="field" style="margin-top:8px">
+      <label for="goto-day">跳到第几天（回放）</label>
+      <div style="display:grid; grid-template-columns:1fr 92px; gap:6px">
+        <input id="goto-day" type="number" min="0" max="2000" value="0" />
+        <button id="btn-goto" class="btn-mini">跳转</button>
+      </div>
+      <div class="hint">从初始状态按当时的投料重放，约 0.05 秒/天；小时读数会清空。</div>
+    </div>
+
+    <h2>推荐加料</h2>
+    <div class="field"><label for="reco-days">自动推进批次数（天/次请求）</label><input id="reco-days" type="number" value="3" min="1" max="30" />
+      <div class="hint">每次请求连推 N 天，只在这 N 天的开头重算一次推荐。<b>N=1 最准但最慢</b>（每天都要跑一遍优化），3–5 天是速度与跟随性的折中。</div></div>
+    <div class="hint" style="margin-bottom:4px">稳定窗口（经验值，可按本厂调整）</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px">
+      <div class="field"><label for="lim-ph">pH 下限</label><input id="lim-ph" type="number" step="0.1" value="6.8" /></div>
+      <div class="field"><label for="lim-vfa">VFA/TAC 上限</label><input id="lim-vfa" type="number" step="0.05" value="0.4" /></div>
+      <div class="field"><label for="lim-olr">OLR 上限</label><input id="lim-olr" type="number" step="0.5" value="5.0" /></div>
+      <div class="field"><label for="lim-hrt">HRT 下限 d</label><input id="lim-hrt" type="number" step="1" value="20" /></div>
+    </div>
+    <div class="btns">
+      <button id="btn-rec" class="btn ghost" disabled>只算推荐（不推进）</button>
+      <button id="btn-auto" class="btn" disabled>按推荐持续推进</button>
+      <button id="btn-loop" class="btn ghost" disabled>自动推进（每天重算）</button>
+      <button id="btn-export" class="btn ghost" disabled>导出运行日报（CSV）</button>
+    </div>
+
+
+    <h2>多方案对比</h2>
+    <div class="field"><label for="cmp-days">对比天数</label><input id="cmp-days" type="number" value="30" min="5" max="120" /></div>
+    <div id="cmp-list"></div>
+    <div class="btns">
+      <button id="btn-cmp" class="btn ghost" disabled>对比所选方案</button>
+      <button id="btn-cmp-mode" class="btn ghost" disabled>切到对比视图</button>
+    </div>
+
+    <div class="status" id="status">启动会话后：可以手动加料，也可以让系统按推荐持续加。</div>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi"><b>第几天</b><strong id="k-day">—</strong></div>
+      <div class="kpi"><b>沼气</b><strong id="k-gas">—</strong></div>
+      <div class="kpi"><b>甲烷</b><strong id="k-ch4">—</strong></div>
+      <div class="kpi"><b>pH</b><strong id="k-ph">—</strong></div>
+      <div class="kpi"><b>VFA/TAC</b><strong id="k-vfa">—</strong></div>
+    </div>
+    <div class="banner" id="alerts">运行状态：还没有会话</div>
+    <div class="recpanel" id="recpanel">AI 推荐：还没有计算。点左侧「只算推荐」或「自动推进」。</div>
+    <div class="chart" id="chart-gas"></div>
+    <div class="chart" id="chart-ph"></div>
+    <div class="chart" id="chart-vfa"></div>
+    <div class="chart" id="chart-load"></div>
+  </section>
+</main>
+
+<!-- 底物编辑：把 /substrates 的核心功能并进来，改完直接在当前行使用 -->
+<div class="modal" id="sub-modal" hidden>
+  <div class="modal-box">
+    <h3>自定义底物</h3>
+    <div class="hint" style="margin-bottom:8px">以内置底物为模板，只填你知道的几项；保存后自动选中。</div>
+    <div class="field"><label for="sub-name">名称</label><input id="sub-name" type="text" placeholder="例：本地鸡粪（烘干）" /></div>
+    <div class="field"><label for="sub-base">模板</label><select id="sub-base"></select></div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px">
+      <div class="field"><label for="sub-TS">总固体 TS</label><input id="sub-TS" type="number" step="any" /></div>
+      <div class="field"><label for="sub-NH4">氨氮</label><input id="sub-NH4" type="number" step="any" /></div>
+      <div class="field"><label for="sub-fRP">粗蛋白（占TS）</label><input id="sub-fRP" type="number" step="any" /></div>
+      <div class="field"><label for="sub-fRFe">粗脂肪（占TS）</label><input id="sub-fRFe" type="number" step="any" /></div>
+      <div class="field"><label for="sub-fRF">粗纤维（占TS）</label><input id="sub-fRF" type="number" step="any" /></div>
+      <div class="field"><label for="sub-fRA">灰分（占TS）</label><input id="sub-fRA" type="number" step="any" /></div>
+    </div>
+    <div style="display:flex; gap:6px; margin-top:8px">
+      <button id="sub-save" class="btn" style="flex:1">保存并使用</button>
+      <button id="sub-cancel" class="btn ghost" style="flex:1">取消</button>
+    </div>
+    <div class="hint" style="margin-top:6px">需要改全部 17 个字段 → <a href="/substrates" target="_blank" style="color:#6fe3d4">打开完整底物库</a></div>
+  </div>
+</div>
+<script src="/static/daily.js"></script>
+</body>
+</html>

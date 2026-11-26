@@ -23,9 +23,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -743,6 +744,603 @@ def online_stop() -> dict:
         session.close()
     _ONLINE["session"] = None
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Plant operation: substrates / daily feeding / feed optimisation / sensors
+# ---------------------------------------------------------------------------
+
+_DAILY: dict[str, Any] = {"session": None}
+_SENSORS: dict[str, Any] = {"hub": None}
+
+import workspace as ws_mod  # noqa: E402
+
+WS = ws_mod.WorkspaceManager()
+
+
+def _ws_daily() -> Any:
+    """Return the daily session, rebuilding it from the active workspace if needed."""
+    session = _DAILY.get("session")
+    if session is not None:
+        return session
+    payload = WS.load("daily")
+    if not payload:
+        return None
+    import daily as daily_mod
+
+    session = _serial(daily_mod.DailySession.from_payload, payload)
+    _DAILY["session"] = session
+    return session
+
+
+def _save_daily(session: Any, snap: dict[str, Any]) -> None:
+    """Persist the session into the active workspace after every mutation."""
+    try:
+        WS.save(
+            "daily",
+            session.to_payload(),
+            summary={
+                "day": snap.get("day"),
+                "q_ch4": (snap.get("latest") or {}).get("q_ch4"),
+                "feed": snap.get("feed"),
+            },
+        )
+    except Exception:  # noqa: BLE001 - 存不下来不该让推进失败
+        pass
+
+
+class SubstrateRequest(BaseModel):
+    """A user-defined substrate (fields missing here fall back to the template)."""
+
+    id: str | None = None
+    name: str
+    based_on: str = "maize_silage_milk_ripeness"
+    note: str = ""
+    values: dict[str, float] = Field(default_factory=dict)
+
+
+class DailyStartRequest(BaseModel):
+    """Opening blend and reactor size for a day-by-day session."""
+
+    substrate_ids: list[str] = Field(default_factory=lambda: ["maize_silage_milk_ripeness", "swine_manure", "cattle_manure"])
+    flows: list[float] = Field(default_factory=lambda: [11.4, 6.1, 5.0])
+    v_liq: float = Field(default=1050.0, ge=100.0, le=10000.0)
+    v_gas: float = Field(default=150.0, ge=10.0, le=5000.0)
+    t_c: float = Field(default=42.0, ge=20.0, le=60.0)
+
+
+class DailyAdvanceRequest(BaseModel):
+    """Today's feed, substrate id -> m³/d."""
+
+    feed: dict[str, float]
+
+
+class DailyAutoRequest(BaseModel):
+    """Keep feeding by the recommendation for N days."""
+
+    days: int = Field(default=7, ge=1, le=60)
+    adjustable: list[str] | None = None
+    reopt_every: int = Field(default=7, ge=1, le=60)
+    days_per_eval: int = Field(default=30, ge=10, le=90)
+    limits: dict[str, float] = Field(default_factory=dict)
+
+
+class DailyGotoRequest(BaseModel):
+    """Rewind the session to a given day."""
+
+    day: int = Field(ge=0, le=2000)
+
+
+class DailyCompareRequest(BaseModel):
+    """Several blends to run side by side from the same state."""
+
+    days: int = Field(default=30, ge=5, le=120)
+    scenarios: list[dict[str, Any]]
+
+
+class OptimizeRequest(BaseModel):
+    """Which substrates to optimise over, and where to start from."""
+
+    adjustable: list[str] | None = None
+    substrate_ids: list[str]
+    flows: list[float]
+    days: int = Field(default=30, ge=10, le=90)
+    t_c: float = Field(default=42.0, ge=20.0, le=60.0)
+    limits: dict[str, float] = Field(default_factory=dict)
+
+
+class SensorStartRequest(BaseModel):
+    """Driver settings for the sensor page."""
+
+    kind: str = "simulated"
+    bias: float = Field(default=0.0, ge=-0.5, le=0.5)
+    ph_bias: float = Field(default=0.0, ge=-1.5, le=1.5)
+    dropout: float = Field(default=0.0, ge=0.0, le=0.5)
+    prior_scale: float = Field(default=0.6, ge=0.2, le=1.4)
+
+
+class SensorReadRequest(BaseModel):
+    """A reading pushed in from outside (manual entry or a real driver)."""
+
+    Q_gas: float | None = None
+    Q_ch4: float | None = None
+    pH: float | None = None
+
+
+class RecommendRequest(BaseModel):
+    """Which substrates the plant may change, and the operating window."""
+
+    adjustable: list[str] | None = None
+    limits: dict[str, float] = Field(default_factory=dict)
+
+
+def _adjustable_map(ids: list[str] | None) -> dict[str, bool] | None:
+    """Turn "these are adjustable" into ``{substrate_id: bool}``.
+
+    ``None`` means "everything is adjustable", which is the old behaviour.
+    """
+    if ids is None:
+        return None
+    return {sid: True for sid in ids}
+
+
+@app.get("/substrates")
+def substrates_page() -> FileResponse:
+    """Serve the substrate library."""
+    return FileResponse(STATIC_DIR / "substrates.html")
+
+
+@app.get("/daily")
+def daily_page() -> FileResponse:
+    """Serve the day-by-day feeding view."""
+    return FileResponse(STATIC_DIR / "daily.html")
+
+
+@app.get("/optimize")
+def optimize_page() -> FileResponse:
+    """Serve the feed-recommendation view."""
+    return FileResponse(STATIC_DIR / "optimize.html")
+
+
+# ---------------------------------------------------------------------------
+# Sensors: they read the *same* digester the day-by-day view advances
+# ---------------------------------------------------------------------------
+
+
+class SensorConfigRequest(BaseModel):
+    """How the (simulated) sensor misbehaves."""
+
+    bias: float = Field(default=0.0, ge=-0.5, le=0.5)
+    ph_bias: float = Field(default=0.0, ge=-1.5, le=1.5)
+    noise: float = Field(default=0.02, ge=0.0, le=0.3)
+
+
+class SensorReadRequest(BaseModel):
+    """A reading pushed in from outside (meter, replay, manual entry)."""
+
+    Q_gas: float | None = None
+    Q_ch4: float | None = None
+    pH: float | None = None
+
+
+@app.get("/sensors")
+def sensors_page() -> FileResponse:
+    """Serve the sensor view (bound to the active workspace session)."""
+    return FileResponse(STATIC_DIR / "sensors.html")
+
+
+@app.post("/api/sensors/config")
+def api_sensors_config(req: SensorConfigRequest) -> dict:
+    """Store the sensor model used by the next polls."""
+    _SENSORS["cfg"] = {
+        "bias": req.bias,
+        "ph_bias": req.ph_bias,
+        "noise": req.noise,
+    }
+    return {"ok": True, "config": _SENSORS["cfg"]}
+
+
+@app.post("/api/sensors/poll")
+def api_sensors_poll() -> dict:
+    """Advance the plant one hour, read it, correct the filter."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="还没有会话：先在「按天推进」启动一个工作区会话")
+    try:
+        snap = _serial(session.poll_sensor, _SENSORS.get("cfg") or {})
+        _save_daily(session, snap)
+        return snap
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/sensors/push")
+def api_sensors_push(req: SensorReadRequest) -> dict:
+    """Apply an externally supplied reading to the filter."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="还没有会话：先在「按天推进」启动一个工作区会话")
+    reading = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not reading:
+        raise HTTPException(status_code=400, detail="至少要给出 Q_gas / Q_ch4 / pH 中的一个")
+    try:
+        snap = _serial(session.ingest_external, reading)
+        _save_daily(session, snap)
+        return snap
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.get("/api/sensors/state")
+def api_sensors_state() -> dict:
+    """Current session snapshot for the sensor page."""
+    session = _ws_daily()
+    if session is None:
+        return {"ok": False, "active": False}
+    snap = session.snapshot()
+    snap["active"] = True
+    snap["sensor_config"] = _SENSORS.get("cfg") or {}
+    return snap
+
+
+@app.get("/api/substrates")
+def api_substrates() -> dict:
+    """Built-in and user-defined substrates."""
+    try:
+        import substrates as sub_mod
+
+        return {
+            "ok": True,
+            "items": sub_mod.list_substrates(),
+            "fields": [
+                {"key": k, "label": sub_mod.LABELS[k][0], "unit": sub_mod.LABELS[k][1]}
+                for k in sub_mod.EDITABLE
+            ],
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/substrates")
+def api_substrate_save(req: SubstrateRequest) -> dict:
+    """Create or update a custom substrate."""
+    try:
+        import substrates as sub_mod
+
+        rec = sub_mod.save_custom(req.model_dump())
+        return {"ok": True, "item": rec}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.delete("/api/substrates/{substrate_id}")
+def api_substrate_delete(substrate_id: str) -> dict:
+    """Remove a custom substrate."""
+    try:
+        import substrates as sub_mod
+
+        return {"ok": sub_mod.delete_custom(substrate_id)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/daily/start")
+def api_daily_start(req: DailyStartRequest) -> dict:
+    """Open a day-by-day session."""
+    try:
+        import daily as daily_mod
+
+        if not WS.active_id:
+            # 没有工作区就自动建一个：不该逼用户先去别的页面选
+            import time as _time
+
+            rec = WS.create(_time.strftime("工作区 %m-%d %H:%M"))
+            WS.open(rec["id"])
+        old = _DAILY.get("session")
+        if old is not None:
+            _DAILY["session"] = None
+        cfg = daily_mod.DailyConfig(
+            substrate_ids=list(req.substrate_ids),
+            flows=list(req.flows),
+            v_liq=req.v_liq,
+            v_gas=req.v_gas,
+            t_c=req.t_c,
+        )
+        session = _serial(daily_mod.DailySession, cfg)
+        _DAILY["session"] = session
+        snap = session.snapshot()
+        _save_daily(session, snap)
+        return snap
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/daily/advance")
+def api_daily_advance(req: DailyAdvanceRequest) -> dict:
+    """Feed today's blend and step one day."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="会话未启动")
+    try:
+        snap = _serial(session.advance, req.feed)
+        _save_daily(session, snap)
+        return snap
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.get("/api/daily/state")
+def api_daily_state() -> dict:
+    """Current day-by-day snapshot (for refresh)."""
+    session = _ws_daily()
+    return session.snapshot() if session is not None else {"ok": False, "active": False}
+
+
+@app.post("/api/daily/recommend")
+def api_daily_recommend(req: RecommendRequest | None = None) -> dict:
+    """Recommendation computed from the session's current state."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="会话未启动")
+    try:
+        adjustable = _adjustable_map(req.adjustable if req else None)
+        rec = _serial(session.recommend, limits=(req.limits if req else None), adjustable=adjustable)
+        session.last_reco = {
+            "day": session.day,
+            "ids": list(session.ids),
+            "names": [rec["substrates"][i]["name"] for i in range(len(session.ids))],
+            "current": list(rec["current"]["flows"]),
+            "recommended": list(rec["recommended"]["flows"]),
+            "q_ch4_now": rec["current"]["q_ch4"],
+            "q_ch4_rec": rec["recommended"]["q_ch4"],
+            "gain_pct": rec["gain_pct"],
+            "binding": rec["binding"],
+            "violations": rec["recommended"]["violations"],
+        }
+        _save_daily(session, session.snapshot())
+        return rec
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/daily/auto")
+def api_daily_auto(req: DailyAutoRequest) -> dict:
+    """Advance several days, re-recommending the blend on schedule."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="会话未启动")
+    try:
+        snap = _serial(
+            session.auto_recommended,
+            days=req.days,
+            reopt_every=req.reopt_every,
+            days_per_eval=req.days_per_eval,
+            limits=req.limits,
+            adjustable=_adjustable_map(req.adjustable),
+        )
+        _save_daily(session, snap)
+        return snap
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/daily/goto")
+def api_daily_goto(req: DailyGotoRequest) -> dict:
+    """Jump back (or forward) to a day by replaying the recorded feeds."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="会话未启动")
+    try:
+        snap = _serial(session.go_to_day, req.day)
+        _save_daily(session, snap)
+        return snap
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/daily/compare")
+def api_daily_compare(req: DailyCompareRequest) -> dict:
+    """Run several feeding plans from the same state for side-by-side curves."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="会话未启动")
+    try:
+        return _serial(session.compare, req.scenarios, req.days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/optimize")
+def api_optimize(req: OptimizeRequest) -> dict:
+    """Recommend a feed blend that maximises methane inside the operating window."""
+    try:
+        import optimize as opt_mod
+
+        limits = opt_mod.Limits(**{k: float(v) for k, v in (req.limits or {}).items()})
+        return _serial(
+            opt_mod.optimize,
+            ids=list(req.substrate_ids),
+            current=list(req.flows),
+            days=req.days,
+            t_c=req.t_c,
+            limits=limits,
+            adjustable=[(i in (req.adjustable or req.substrate_ids)) for i in req.substrate_ids],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+
+@app.get("/workspaces")
+def workspaces_page() -> FileResponse:
+    """Serve the workspace (long-session) manager."""
+    return FileResponse(STATIC_DIR / "workspaces.html")
+
+
+class WorkspaceRequest(BaseModel):
+    """Create / rename a workspace."""
+
+    name: str
+    note: str = ""
+
+
+@app.get("/api/workspaces")
+def api_workspaces() -> dict:
+    """All workspaces plus which one is active."""
+    return {"ok": True, "active": WS.info(), "items": WS.list()}
+
+
+@app.post("/api/workspaces")
+def api_workspace_create(req: WorkspaceRequest) -> dict:
+    """Create a workspace and make it active."""
+    try:
+        rec = WS.create(req.name.strip() or "未命名工作区", req.note)
+        WS.open(rec["id"])
+        _DAILY["session"] = None
+        _SENSORS["hub"] = None
+        return {"ok": True, **rec}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.post("/api/workspaces/{ws_id}/open")
+def api_workspace_open(ws_id: str) -> dict:
+    """Switch the active workspace and drop cached sessions."""
+    try:
+        rec = WS.open(ws_id)
+        _DAILY["session"] = None
+        _SENSORS["hub"] = None
+        return {"ok": True, **rec}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/workspaces/{ws_id}/rename")
+def api_workspace_rename(ws_id: str, req: WorkspaceRequest) -> dict:
+    """Rename a workspace."""
+    try:
+        return {"ok": True, **WS.rename(ws_id, req.name)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/workspaces/{ws_id}")
+def api_workspace_delete(ws_id: str) -> dict:
+    """Delete a workspace and everything stored in it."""
+    was_active = WS.active_id == ws_id
+    ok = WS.delete(ws_id)
+    if was_active:
+        _DAILY["session"] = None
+        _SENSORS["hub"] = None
+    return {"ok": ok}
+
+
+@app.get("/api/daily/export.csv")
+def api_daily_export() -> Response:
+    """Download the run record as CSV (a shift report a plant can file)."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="还没有会话")
+    snap = session.snapshot()
+    s = snap["series"]
+    names = snap.get("feed_names") or {}
+
+    import csv
+    import io
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    header = ["天数", "罐龄(d)", "沼气(m³/d)", "甲烷(m³/d)", "甲烷占比(%)", "pH",
+              "VFA(kg/m³)", "TAC(kg/m³)", "总进料(m³/d)", "OLR(kg VS/(m³·d))", "HRT(d)"]
+    header += [f"投料-{names.get(i, i)}(m³/d)" for i in snap["feed"]]
+    w.writerow(header)
+
+    feed_cols = {i: [] for i in snap["feed"]}
+    for h in session.history:
+        for i, v in (h.get("feed") or {}).items():
+            feed_cols.setdefault(i, []).append(v)
+    for k in feed_cols:
+        col = feed_cols[k]
+        feed_cols[k] = col + [None] * (len(s["day"]) - len(col))
+
+    for idx, day in enumerate(s["day"]):
+        ages = s.get("t_days") or []
+        row = [
+            int(day),
+            round(ages[idx], 2) if idx < len(ages) else "",
+            s["q_gas"][idx], s["q_ch4"][idx],
+            round(s["ch4_pct"][idx], 2) if s["ch4_pct"][idx] is not None else "",
+            round(s["ph"][idx], 3), round(s["vfa"][idx], 3), round(s["tac"][idx], 3),
+            s["q_total"][idx], round(s["olr"][idx], 2), round(s["hrt"][idx], 1),
+        ]
+        for i in snap["feed"]:
+            row.append(feed_cols[i][idx] if idx < len(feed_cols[i]) else "")
+        w.writerow(row)
+
+    body = "\ufeff" + buf.getvalue()  # BOM：Excel 打开中文不乱码
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="daily-report.csv"'},
+    )
+
+
+class PerturbRequest(BaseModel):
+    """Drift the plant parameter by a factor (a simulated process fault)."""
+
+    factor: float = Field(default=1.3, ge=0.1, le=10.0)
+    parameter: str = "k_m_ac"
+
+
+@app.post("/api/sensors/perturb")
+def api_sensors_perturb(req: PerturbRequest) -> dict:
+    """Simulate a reality change on the workspace plant (was /online's drift)."""
+    session = _ws_daily()
+    if session is None:
+        raise HTTPException(status_code=409, detail="还没有会话：先在「按天推进」启动一个工作区会话")
+    try:
+        snap = _serial(session.perturb, req.factor, req.parameter)
+        _save_daily(session, snap)
+        return snap
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.get("/api/diagnose")
+def api_diagnose() -> dict:
+    """Rule-based diagnosis of the current state: what is wrong and what to do."""
+    session = _ws_daily()
+    if session is None:
+        return {"ok": False, "level": "unknown", "headline": "还没有会话", "causes": [], "evidence": {}}
+    try:
+        import diagnose as diag
+
+        return diag.diagnose(session.snapshot())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@app.get("/api/diagnose/demo")
+def api_diagnose_demo() -> dict:
+    """Canned fault scenarios, run through the same rules as the live path."""
+    try:
+        import diagnose as diag
+
+        return {"ok": True, "items": diag.list_demo(), "note": "范例为合成数据，用于演示判断逻辑，不是现场记录。"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
 
 @app.get("/api/health")

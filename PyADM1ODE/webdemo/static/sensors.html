@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 传感器</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<script src="/static/plotly.min.js"></script>
+<script src="/static/chart-theme.js"></script>
+<style>
+  section.stage { grid-template-rows: auto repeat(2, minmax(0, 1fr)); }
+  .chart { min-height: 200px; }
+  .btn { width: 100%; cursor: pointer; font-family: var(--mono); font-size: 12px; color: #eaf3fc;
+    background: #123033; border: 1px solid rgba(111,227,212,.45); border-radius: 7px; padding: 9px 10px; }
+  .btn:hover:not(:disabled) { background: #17403f; border-color: #6fe3d4; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn.ghost { background: #0b0e13; border-color: var(--line2); color: var(--muted); }
+  .btns { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .push { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  section.stage { grid-template-rows: auto auto auto repeat(2, minmax(0, 1fr)); }
+  .diag { border-radius: 10px; padding: 9px 12px; font-family: var(--mono); font-size: 11.5px;
+    border: 1px solid rgba(111,227,212,.35); background: rgba(18,48,51,.55); color: #cfeae6;
+    overflow: auto; max-height: 210px; }
+  .diag.warn { border-color: rgba(255,180,90,.45); background: rgba(60,42,18,.55); color: #ffd9a0; }
+  .diag.serious { border-color: rgba(255,120,120,.55); background: rgba(64,20,20,.6); color: #ffb4b4; }
+  .diag b { color: #fff; }
+  .diag .cause { margin-top: 6px; padding-left: 8px; border-left: 2px solid rgba(255,255,255,.18); }
+  .diag .ev { opacity: .8; }
+  .diag .act { margin-top: 2px; }
+  .btn-mini { font-family: var(--mono); font-size: 11px; padding: 4px 10px; cursor: pointer;
+    width: auto; display: inline-block;
+    background: #0b0e13; color: var(--muted); border: 1px solid var(--line2); border-radius: 6px; }
+  .btn-mini:hover { color: #eaf3fc; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>传感器</h1>
+      <p>SENSORS · 同一个罐、同一条时间线，按小时读一次并修正状态</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <h2>传感器模型</h2>
+    <div class="field"><label for="bias">比例偏差 <span class="unit">%</span></label><input id="bias" type="number" value="3" step="1" />
+      <div class="hint">正数 = 读数比真值高，模拟标定偏了。</div></div>
+    <div class="field"><label for="phb">pH 偏差</label><input id="phb" type="number" value="0" step="0.05" /></div>
+    <div class="field"><label for="noise">噪声 σ</label><input id="noise" type="number" value="0.02" step="0.01" /></div>
+
+    <h2 style="margin-top:12px">模拟工艺变化</h2>
+    <div class="field"><label for="drift">参数偏移倍数（k_m_ac）</label><input id="drift" type="number" value="1.3" step="0.1" min="0.1" max="5" />
+      <div class="hint">把罐内的动力学参数拉开，看诊断能不能识别出异常。</div></div>
+    <button id="perturb" class="btn ghost" disabled>施加偏移</button>
+
+    <div class="btns">
+      <button id="poll" class="btn" disabled>取一次读数（推进 1 小时）</button>
+      <button id="poll6" class="btn ghost" disabled>连续取 6 次</button>
+    </div>
+
+    <h2 style="margin-top:14px">手工注入读数</h2>
+    <div class="push">
+      <div class="field"><label for="qg">沼气 m³/d</label><input id="qg" type="number" step="10" /></div>
+      <div class="field"><label for="qc">甲烷 m³/d</label><input id="qc" type="number" step="10" /></div>
+    </div>
+    <div class="field"><label for="ph">pH</label><input id="ph" type="number" step="0.01" /></div>
+    <button id="push" class="btn ghost" disabled>注入这条读数</button>
+
+    <div class="status" id="status">先到「按天推进」启动一个工作区会话；这里读的是同一个罐。</div>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi"><b>罐龄</b><strong id="k-t">—</strong></div>
+      <div class="kpi"><b>读数 沼气</b><strong id="k-rg">—</strong></div>
+      <div class="kpi"><b>真值 沼气</b><strong id="k-tg">—</strong></div>
+      <div class="kpi"><b>读数偏差</b><strong id="k-err">—</strong></div>
+      <div class="kpi"><b>状态中位误差</b><strong id="k-st">—</strong></div>
+      <div class="kpi"><b>累计读数</b><strong id="k-n">—</strong></div>
+    </div>
+
+    <div class="diag" id="diag">诊断：还没有读数。</div>
+
+    <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:2px 0 4px">
+      <span style="font-family:var(--mono); font-size:11px; color:var(--muted); align-self:center">范例演示：</span>
+      <button class="btn-mini" data-demo="acid">酸化</button>
+      <button class="btn-mini" data-demo="ammonia">氨抑制</button>
+      <button class="btn-mini" data-demo="gasdrop">产气骤降</button>
+      <button class="btn-mini" data-demo="sensor">读数可疑</button>
+      <button class="btn-mini" id="demo-live">回到实时</button>
+    </div>
+
+    <div class="chart" id="chart-gas"></div>
+    <div class="chart" id="chart-err"></div>
+  </section>
+</main>
+
+<script src="/static/sensors.js"></script>
+</body>
+</html>

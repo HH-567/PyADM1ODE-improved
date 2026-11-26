@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PyADM1ODE · 底物库</title>
+<link rel="stylesheet" href="/static/lab.css" />
+<style>
+  .stage { grid-template-rows: auto minmax(0, 1fr); }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .grid2 .field { margin: 0; }
+  table.subs { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+  table.subs th, table.subs td { padding: 6px 8px; border-bottom: 1px solid rgba(190,215,240,.07); text-align: left; }
+  table.subs th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  table.subs tr:hover td { background: rgba(120,200,220,.05); }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); }
+  .tag.custom { color: #6fe3d4; border-color: rgba(111,227,212,.5); }
+  .btn-mini {
+    font-family: var(--mono); font-size: 11px; padding: 3px 8px; cursor: pointer;
+    width: auto; display: inline-block; margin-right: 4px;
+    background: #0b0e13; color: var(--muted); border: 1px solid var(--line2); border-radius: 6px;
+  }
+  .btn-mini:hover { color: #eaf3fc; border-color: var(--accent); }
+  .btn-mini.danger:hover { color: #ff8a8a; border-color: #ff8a8a; }
+  .scroll { overflow: auto; }
+  .btn { width: 100%; cursor: pointer; font-family: var(--mono); font-size: 12px; color: #eaf3fc;
+    background: #123033; border: 1px solid rgba(111,227,212,.45); border-radius: 7px; padding: 9px 10px; margin-top: 4px; }
+  .btn:hover:not(:disabled) { background: #17403f; border-color: #6fe3d4; }
+  .btn:disabled { opacity: .35; cursor: not-allowed; }
+  .btn.ghost { background: #0b0e13; border-color: var(--line2); color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="dot">AD</div>
+    <div>
+      <h1>底物库</h1>
+      <p>SUBSTRATES · 自定义底物与字段</p>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 返回仪表盘</a>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <h2 id="form-title">新增底物</h2>
+
+    <div class="field">
+      <label for="name">底物名称</label>
+      <input id="name" type="text" placeholder="例如：餐厨垃圾（预处理）" />
+    </div>
+
+    <div class="field">
+      <label for="based_on">以哪个内置底物为模板</label>
+      <select id="based_on"></select>
+      <div class="hint">未填写的字段沿用模板值；先选模板，再改你知道的那几项。</div>
+    </div>
+
+    <div class="field">
+      <label for="note">备注（来源 / 取样地点）</label>
+      <input id="note" type="text" placeholder="例：2026-11 某厂离心后样品" />
+    </div>
+
+    <div class="grid2" id="fields"></div>
+
+    <button id="save" class="btn">保存到底物库</button>
+    <button id="reset" class="btn ghost">清空表单</button>
+
+    <div class="status" id="status">自定义底物保存在项目目录的 custom_substrates.json。</div>
+  </aside>
+
+  <section class="stage">
+    <div class="kpis">
+      <div class="kpi"><b>底物总数</b><strong id="k-total">—</strong></div>
+      <div class="kpi"><b>自定义</b><strong id="k-custom">—</strong></div>
+      <div class="kpi"><b>当前编辑</b><strong id="k-editing">新底物</strong></div>
+    </div>
+    <div class="chart scroll" style="padding: 8px 12px">
+      <table class="subs" id="table"></table>
+    </div>
+  </section>
+</main>
+
+<script src="/static/substrates.js"></script>
+</body>
+</html>

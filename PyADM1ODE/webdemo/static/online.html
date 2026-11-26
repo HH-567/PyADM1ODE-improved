@@ -6,6 +6,7 @@
 <title>PyADM1ODE · 在线更正</title>
 <link rel="stylesheet" href="/static/lab.css" />
 <script src="/static/plotly.min.js"></script>
+<script src="/static/chart-theme.js"></script>
 <style>
   /* 本页有五块内容（KPI + 四张图），lab.css 的 .stage 是按四行设计的 */
   .stage { grid-template-rows: auto repeat(4, minmax(0, 1fr)); }
@@ -43,6 +44,11 @@
   <a class="back" href="/">← 返回仪表盘</a>
 </header>
 
+<div class="merged-notice" style="margin:12px 20px 0; padding:10px 14px; border-radius:10px;
+  border:1px solid rgba(255,180,90,.45); background:rgba(60,42,18,.55); color:#ffd9a0;
+  font-family:var(--mono, monospace); font-size:12px">
+  <b>本页功能已并入「传感器」</b> —— <a href="/sensors" style="color:#6fe3d4">传感器页现在读的就是工作区那个罐，并带「施加偏移」来模拟工艺变化、附带自动诊断。</a>
+</div>
 <main class="layout">
   <aside class="panel">
     <h2>会话设置</h2>

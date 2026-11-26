@@ -131,63 +131,85 @@ class OnlineSession:
         }
 
     # -- main loop -------------------------------------------------------
+    def ingest(self, y: dict[str, float]) -> dict[str, Any]:
+        """Update the filter with an **external** reading.
+
+        This is the seam a real sensor plugs into: whatever produces
+        ``{Q_gas, Q_ch4, pH}`` (a driver, a CSV replay, a manual entry) calls
+        this instead of ``step()``, which would generate the reading itself.
+        """
+        t0 = time.perf_counter()
+        self.x_hist.append(np.asarray(self.ukf.x_hat[: self.n_state], dtype=float).copy())
+        self.ukf.predict(self.cfg.dt)
+        upd = self.ukf.update(
+            {k: float(y[k]) for k in ("Q_gas", "Q_ch4", "pH") if k in y},
+            t=self.t + self.cfg.dt,
+            equilibration_dt=self.cfg.dt,
+        )
+        self.t += self.cfg.dt
+        self.steps += 1
+        self._record(y, upd)
+        if self.cfg.calib_every and self.steps % self.cfg.calib_every == 0:
+            self._maybe_calibrate()
+        self.cost_ms = (time.perf_counter() - t0) * 1000.0
+        return self.snapshot(1)
+
     def step(self, n: int = 1) -> dict[str, Any]:
         """Advance ``n`` measurements: filter every one, calibrate on schedule."""
         t0 = time.perf_counter()
         ran = 0
         for _ in range(max(1, min(int(n), 8))):
+            y = self._measure()  # 会推进真值装置并把 self.t 往前挪一格
             self.x_hist.append(np.asarray(self.ukf.x_hat[: self.n_state], dtype=float).copy())
-            y = self._measure()
             self.ukf.predict(self.cfg.dt)
             upd = self.ukf.update(
                 y, t=self.t, equilibration_dt=self.cfg.dt
             )
             self.steps += 1
             ran += 1
-
-            hat = np.asarray(self.ukf.x_hat[: self.n_state], dtype=float)
-            ref = np.asarray(self.est.components["main_digester"].adm1_state, dtype=float)  # placeholder
-            ref = np.asarray(self.truth.components["main_digester"].adm1_state, dtype=float)
-            mask = np.abs(ref) > 1e-6
-            err = float(np.median(np.abs((hat[mask] - ref[mask]) / ref[mask]))) if mask.any() else float("nan")
-
-            nis = float("nan")
-            nis_raw = getattr(upd, "nis", None)
-            try:
-                if isinstance(nis_raw, dict):
-                    vals = [float(v) for v in nis_raw.values() if np.isfinite(v)]
-                    nis = float(np.mean(vals)) if vals else float("nan")
-                elif nis_raw is not None:
-                    arr = np.asarray(nis_raw, dtype=float).ravel()
-                    arr = arr[np.isfinite(arr)]
-                    nis = float(np.mean(arr)) if arr.size else float("nan")
-            except Exception:  # noqa: BLE001 - NIS 只是指标，取不到不该中断
-                nis = float("nan")
-
-            f0 = float(self.ukf.x_hat[self.n_state])
-            f1 = float(self.ukf.x_hat[self.n_state + 1])
-            self.series["t"].append(self.t)
-            self.series["err"].append(err)
-            self.series["nis"].append(nis)
-            self.series["feed0"].append(f0)
-            self.series["feed1"].append(f1)
-            self.series["truth0"].append(FLOWS[0])
-            self.series["truth1"].append(FLOWS[1])
-
-            self.rows.append(
-                {
-                    "timestamp": pd.Timestamp("2026-01-01") + pd.Timedelta(hours=len(self.rows) * self.cfg.dt),
-                    "Q_gas": y["Q_gas"],
-                    "Q_ch4": y["Q_ch4"],
-                    "pH": y["pH"],
-                }
-            )
-
+            self._record(y, upd)
             if self.cfg.calib_every and self.steps % self.cfg.calib_every == 0:
                 self._maybe_calibrate()
 
         self.cost_ms = (time.perf_counter() - t0) * 1000.0
         return self.snapshot(ran)
+
+    def _record(self, y: dict[str, float], upd: Any) -> None:
+        """Append one accepted measurement to the series and the window."""
+        hat = np.asarray(self.ukf.x_hat[: self.n_state], dtype=float)
+        ref = np.asarray(self.truth.components["main_digester"].adm1_state, dtype=float)
+        mask = np.abs(ref) > 1e-6
+        err = float(np.median(np.abs((hat[mask] - ref[mask]) / ref[mask]))) if mask.any() else float("nan")
+
+        nis = float("nan")
+        nis_raw = getattr(upd, "nis", None)
+        try:
+            if isinstance(nis_raw, dict):
+                vals = [float(v) for v in nis_raw.values() if np.isfinite(v)]
+                nis = float(np.mean(vals)) if vals else float("nan")
+            elif nis_raw is not None:
+                arr = np.asarray(nis_raw, dtype=float).ravel()
+                arr = arr[np.isfinite(arr)]
+                nis = float(np.mean(arr)) if arr.size else float("nan")
+        except Exception:  # noqa: BLE001 - NIS 只是指标，取不到不该中断
+            nis = float("nan")
+
+        self.series["t"].append(self.t)
+        self.series["err"].append(err)
+        self.series["nis"].append(nis)
+        self.series["feed0"].append(float(self.ukf.x_hat[self.n_state]))
+        self.series["feed1"].append(float(self.ukf.x_hat[self.n_state + 1]))
+        self.series["truth0"].append(FLOWS[0])
+        self.series["truth1"].append(FLOWS[1])
+
+        self.rows.append(
+            {
+                "timestamp": pd.Timestamp("2026-01-01") + pd.Timedelta(hours=len(self.rows) * self.cfg.dt),
+                "Q_gas": y["Q_gas"],
+                "Q_ch4": y["Q_ch4"],
+                "pH": y["pH"],
+            }
+        )
 
     def _sync_plant_state(self, state_vector: np.ndarray | None = None) -> None:
         """Write a state vector into the estimator plant.

@@ -217,3 +217,7 @@ benchmark/private/
 # Generated evaluation output
 benchmark/results.csv
 benchmark/results/
+
+# 运行时工作区数据（装置状态与曲线，按用户产生）
+webdemo/workspaces/
+webdemo/custom_substrates.json
