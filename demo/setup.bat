@@ -10,11 +10,7 @@ rem  after "chcp 65001".
 rem ---------------------------------------------------------------
 setlocal EnableExtensions
 set PYTHONUTF8=1
-rem Two layouts are supported by the same script:
-rem   bundle   -> demo\app\PyADM1ODE   (built by tools\_build_bundle.py)
-rem   in-repo  -> <repo root>\PyADM1ODE (this folder sits next to it)
-set ROOT=%~dp0app\PyADM1ODE
-if not exist "%ROOT%\pyproject.toml" set ROOT=%~dp0..\PyADM1ODE
+set ROOT=%~dp0..\PyADM1ODE
 set VENV=%ROOT%\.venv
 set PY=%VENV%\Scripts\python.exe
 
